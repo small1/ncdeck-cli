@@ -155,6 +155,24 @@ class DeckClient:
             payload,
         )
 
+    def assign_card(self, board_id, card_id, user_id):
+        card = self.get_card(board_id, card_id)
+        payload = card
+        payload["assignedUsers"] = [{"participant": {"primaryKey": user_id}}]
+        return self._put(
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}",
+            payload,
+        )
+
+    def unassign_card(self, board_id, card_id):
+        card = self.get_card(board_id, card_id)
+        payload = card
+        payload["assignedUsers"] = []
+        return self._put(
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}",
+            payload,
+        )
+
     def archive_card(self, board_id, card_id, archived=True):
         card = self.get_card(board_id, card_id)
         payload = card
@@ -504,6 +522,33 @@ def move_cmd(board_key, card_id, stack_id, instance):
     try:
         result = client.move_card(board["board_id"], card_id, stack_id)
         click.echo(f"Moved card #{card_id} to stack {stack_id} in {inst_name}/{board_key}")
+    except requests.HTTPError as e:
+        click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("assign")
+@click.argument("board_key")
+@click.argument("card_id", type=int)
+@click.argument("user_id")
+@click.option("-i", "--instance", help="Instance name from config")
+@click.option("--unassign", is_flag=True, help="Unassign the card")
+def assign_cmd(board_key, card_id, user_id, instance, unassign):
+    """Assign a card to a user. Example: ncdeck assign inbox 123 alice"""
+    cfg = load_config()
+    inst_name, inst, board = get_mapping(cfg, instance, board_key)
+    client = DeckClient(inst)
+
+    try:
+        if unassign:
+            result = client.unassign_card(board["board_id"], card_id)
+            click.echo(f"Unassigned card #{card_id} in {inst_name}/{board_key}")
+        else:
+            result = client.assign_card(board["board_id"], card_id, user_id)
+            click.echo(f"Assigned card #{card_id} to {user_id} in {inst_name}/{board_key}")
     except requests.HTTPError as e:
         click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
         sys.exit(1)
