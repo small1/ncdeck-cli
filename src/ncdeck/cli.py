@@ -206,7 +206,7 @@ class DeckClient:
         
         return []
 
-    def create_card(self, board_id, stack_id, title, description="", duedate=None, labels=None):
+    def create_card(self, board_id, stack_id, title, description="", duedate=None, labels=None, assigned_users=None):
         payload = {
             "title": title,
             "description": description,
@@ -219,6 +219,9 @@ class DeckClient:
 
         if labels:
             payload["labels"] = [{"id": int(label_id)} for label_id in labels]
+
+        if assigned_users:
+            payload["assignedUsers"] = [{"participant": {"primaryKey": uid}} for uid in assigned_users]
 
         return self._post(
             f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards",
@@ -440,9 +443,10 @@ def list_cmd(instance, boards, stacks, labels_board, cards_board, stack):
 @click.option("-p", "--prefix", default="", help="Prefix to add to the card title (e.g. '[BUG]')")
 @click.option("--due-date", help="Due date in ISO format (e.g., 2026-10-28 or 2026-10-28T15:30:00)")
 @click.option("-t", "--tag", multiple=True, help="Tag/label name to add to the card (can be used multiple times)")
+@click.option("-a", "--assign", multiple=True, help="Assign card to user(s) by user ID (can be used multiple times)")
 @click.option("-i", "--instance", help="Instance name from config")
-def create_cmd(board_key, title, description, description_file, prefix, due_date, tag, instance):
-    """Create a card. Example: ncdeck create inbox 'Fix login bug' -p '[BUG]' -t bug"""
+def create_cmd(board_key, title, description, description_file, prefix, due_date, tag, assign, instance):
+    """Create a card. Example: ncdeck create inbox 'Fix login bug' -p '[BUG]' -t bug -a alice"""
     cfg = load_config()
     inst_name, inst, board = get_mapping(cfg, instance, board_key)
     client = DeckClient(inst)
@@ -459,12 +463,15 @@ def create_cmd(board_key, title, description, description_file, prefix, due_date
             card_description,
             duedate=due_date,
             labels=label_ids if label_ids else None,
+            assigned_users=list(assign) if assign else None,
         )
         click.echo(f"Created card #{card['id']} '{card['title']}' in {inst_name}/{board_key}")
         if due_date:
             click.echo(f"  Due: {due_date}")
         if tag:
             click.echo(f"  Tags: {', '.join(tag)}")
+        if assign:
+            click.echo(f"  Assigned: {', '.join(assign)}")
     except requests.HTTPError as e:
         click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
         sys.exit(1)
