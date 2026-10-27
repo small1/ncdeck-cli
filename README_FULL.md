@@ -258,6 +258,97 @@ Usage: ncdeck move [OPTIONS] BOARD_KEY CARD_ID STACK_ID
 | --- | --- | --- | --- |
 | `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
 
+### `ncdeck list --cards`
+
+List cards in a configured board with details.
+
+```text
+Usage: ncdeck list --cards BOARD_KEY [OPTIONS]
+```
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--cards BOARD_KEY` | `string` | Required | The short key of the board mapping from your config. |
+| `--stack INTEGER` | `int` | `None` | Stack ID to filter cards by. Shows all stacks if omitted. |
+| `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+
+**Examples:**
+
+```bash
+# List all cards in a board
+ncdeck list --cards inbox
+
+# List cards in a specific stack
+ncdeck list --cards inbox --stack 5
+```
+
+### `ncdeck search`
+
+Search for cards containing a keyword or string in title or description (case-insensitive).
+
+```text
+Usage: ncdeck search [OPTIONS] BOARD_KEY QUERY
+```
+
+#### Arguments
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `BOARD_KEY` | Yes | The short key of the board mapping from your config. |
+| `QUERY` | Yes | Keyword or string to search for. |
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+| `--stack INTEGER` | `int` | `None` | Limit search to specific stack ID. |
+| `--include-archived` | flag | `False` | Include archived cards in search results. |
+
+**Examples:**
+
+```bash
+# Search for cards containing "bug"
+ncdeck search inbox bug
+
+# Search in specific stack
+ncdeck search bugs login --stack 9
+
+# Include archived cards
+ncdeck search inbox old --include-archived
+```
+
+### `ncdeck show`
+
+Display full details of a specific card.
+
+```text
+Usage: ncdeck show [OPTIONS] BOARD_KEY CARD_ID
+```
+
+#### Arguments
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `BOARD_KEY` | Yes | The short key of the board mapping from your config. |
+| `CARD_ID` | Yes | The numeric ID of the card to display. |
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+
+**Example:**
+
+```bash
+ncdeck show inbox 123
+```
+
+**Output includes:** Card ID and title, board/instance, stack, status (active/archived), due date, labels, assignees, created/modified timestamps, and full description.
+
 ## Usage Examples
 
 ### Basic card creation
