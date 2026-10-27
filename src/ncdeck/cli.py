@@ -113,6 +113,18 @@ class DeckClient:
     def get_card(self, board_id, card_id):
         return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}")
 
+    def get_card_full(self, board_id, card_id):
+        try:
+            card = self.get_card(board_id, card_id)
+            return card
+        except Exception:
+            # Try to find in board
+            cards = self.list_cards(board_id)
+            for c in cards:
+                if c.get('id') == int(card_id):
+                    return c
+            raise
+
     def update_card(self, board_id, card_id, stack_id=None, title=None, description=None, duedate=None, archived=None):
         # Get current card data first
         card = self.get_card(board_id, card_id)
@@ -553,15 +565,78 @@ def search_cmd(board_key, query, instance, stack, include_archived):
                 click.echo(f"  #{card_id}{archived_str} {title}{assignee_str}")
             if duedate:
                 click.echo(f"    Due: {duedate}")
-            if assigned:
-                names = []
-                for a in assigned:
-                    if isinstance(a, dict):
-                        name = a.get('participant', {}).get('displayname') or a.get('displayname') or a.get('uid')
-                        if name:
-                            names.append(name)
-                if names and not assignee_str:
-                    click.echo(f"    Assignee: {', '.join(names)}")
+    except requests.HTTPError as e:
+        click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("show")
+@click.argument("board_key")
+@click.argument("card_id", type=int)
+@click.option("-i", "--instance", help="Instance name from config")
+def show_cmd(board_key, card_id, instance):
+    """Show full details of a card. Example: ncdeck show inbox 123"""
+    cfg = load_config()
+    inst_name, inst, board = get_mapping(cfg, instance, board_key)
+    client = DeckClient(inst)
+
+    try:
+        card = client.get_card_full(board["board_id"], card_id)
+        click.echo("=" * 60)
+        click.echo(f"Card #{card.get('id')}: {card.get('title', '(untitled)')}")
+        click.echo("=" * 60)
+        click.echo(f"Board: {inst_name}/{board_key}")
+        stack_title = card.get('_stack_title') or card.get('stackTitle')
+        if stack_title:
+            click.echo(f"Stack: {stack_title} (id: {card.get('stackId') or card.get('_stack_id')})")
+        else:
+            click.echo(f"Stack ID: {card.get('stackId')}")
+        if card.get('archived'):
+            click.echo("Status: Archived")
+        else:
+            click.echo("Status: Active")
+        if card.get('duedate'):
+            click.echo(f"Due Date: {card['duedate']}")
+        else:
+            click.echo("Due Date: None")
+        labels = card.get('labels') or []
+        if labels:
+            label_names = []
+            for label in labels:
+                name = label.get('title') or label.get('name')
+                if name:
+                    label_names.append(name)
+            if label_names:
+                click.echo(f"Labels: {', '.join(label_names)}")
+        else:
+            click.echo("Labels: None")
+        assigned = card.get('assignedUsers') or card.get('assignedusers') or []
+        if assigned:
+            names = []
+            for a in assigned:
+                if isinstance(a, dict):
+                    name = a.get('participant', {}).get('displayname') or a.get('displayname') or a.get('uid') or a.get('participant', {}).get('uid')
+                    if name:
+                        names.append(name)
+            if names:
+                click.echo(f"Assignees: {', '.join(names)}")
+            else:
+                click.echo("Assignees: None")
+        else:
+            click.echo("Assignees: None")
+        click.echo(f"Created: {card.get('createdAt', 'Unknown')}")
+        click.echo(f"Last Modified: {card.get('lastModified', 'Unknown')}")
+        click.echo("=" * 60)
+        desc = card.get('description') or ''
+        if desc.strip():
+            click.echo("Description:")
+            click.echo(desc)
+        else:
+            click.echo("Description: (empty)")
+        click.echo("=" * 60)
     except requests.HTTPError as e:
         click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
         sys.exit(1)
