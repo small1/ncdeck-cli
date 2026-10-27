@@ -345,10 +345,24 @@ def list_cmd(instance, boards, stacks, labels_board, cards_board, stack):
                 stack_title = card.get('_stack_title') or card.get('stackTitle') or ''
                 archived = card.get('archived', False)
                 archived_str = " [ARCHIVED]" if archived else ""
+                duedate = card.get('duedate')
+                assigned = card.get('assignedUsers') or card.get('assignedusers') or []
+                assignee_str = ""
+                if assigned:
+                    names = []
+                    for a in assigned:
+                        if isinstance(a, dict):
+                            name = a.get('participant', {}).get('displayname') or a.get('displayname') or a.get('uid')
+                            if name:
+                                names.append(name)
+                    if names:
+                        assignee_str = f" @{','.join(names)}"
                 if stack_title:
-                    click.echo(f"  #{card_id} [{stack_title}]{archived_str} {title}")
+                    click.echo(f"  #{card_id} [{stack_title}]{archived_str} {title}{assignee_str}")
                 else:
-                    click.echo(f"  #{card_id}{archived_str} {title}")
+                    click.echo(f"  #{card_id}{archived_str} {title}{assignee_str}")
+                if duedate:
+                    click.echo(f"    Due: {duedate}")
         except Exception as e:
             click.echo(f"Error fetching cards: {e}", err=True)
         return
@@ -521,12 +535,33 @@ def search_cmd(board_key, query, instance, stack, include_archived):
             stack_title = card.get('_stack_title') or card.get('stackTitle') or ''
             archived = card.get('archived', False)
             archived_str = " [ARCHIVED]" if archived else ""
+            duedate = card.get('duedate')
+            assigned = card.get('assignedUsers') or card.get('assignedusers') or []
+            assignee_str = ""
+            if assigned:
+                names = []
+                for a in assigned:
+                    if isinstance(a, dict):
+                        name = a.get('participant', {}).get('displayname') or a.get('displayname') or a.get('uid')
+                        if name:
+                            names.append(name)
+                if names:
+                    assignee_str = f" @{','.join(names)}"
             if stack_title:
-                click.echo(f"  #{card_id} [{stack_title}]{archived_str} {title}")
+                click.echo(f"  #{card_id} [{stack_title}]{archived_str} {title}{assignee_str}")
             else:
-                click.echo(f"  #{card_id}{archived_str} {title}")
-            if card.get('duedate'):
-                click.echo(f"    Due: {card['duedate']}")
+                click.echo(f"  #{card_id}{archived_str} {title}{assignee_str}")
+            if duedate:
+                click.echo(f"    Due: {duedate}")
+            if assigned:
+                names = []
+                for a in assigned:
+                    if isinstance(a, dict):
+                        name = a.get('participant', {}).get('displayname') or a.get('displayname') or a.get('uid')
+                        if name:
+                            names.append(name)
+                if names and not assignee_str:
+                    click.echo(f"    Assignee: {', '.join(names)}")
     except requests.HTTPError as e:
         click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
         sys.exit(1)
