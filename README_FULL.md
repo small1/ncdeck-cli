@@ -211,6 +211,7 @@ Usage: ncdeck create [OPTIONS] BOARD_KEY TITLE
 | `-f, --description-file PATH` | `path` | `None` | Read the card description from a local Markdown/text file. The file contents are used as-is. |
 | `--due-date TEXT` | `string` | `None` | Due date for the card in ISO 8601 format. Examples: `2026-10-31`, `2026-11-01T14:30:00`. |
 | `-t, --tag TEXT` | `string` (multiple) | `[]` | Tag/label name to apply to the card. Can be used multiple times. Names are matched case-insensitively against labels on the target board. |
+| `-a, --assign TEXT` | `string` (multiple) | `[]` | Assign card to user(s) by Nextcloud user ID. Can be used multiple times. |
 | `-i, --instance TEXT` | `string` | `default_instance` | Instance to use for this card. |
 
 ### `ncdeck done`
