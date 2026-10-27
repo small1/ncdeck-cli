@@ -258,6 +258,39 @@ Usage: ncdeck move [OPTIONS] BOARD_KEY CARD_ID STACK_ID
 | --- | --- | --- | --- |
 | `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
 
+### `ncdeck assign`
+
+Assign a card to a user or unassign it.
+
+```text
+Usage: ncdeck assign [OPTIONS] BOARD_KEY CARD_ID USER_ID
+```
+
+#### Arguments
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `BOARD_KEY` | Yes | The short key of the board mapping from your config. |
+| `CARD_ID` | Yes | The numeric ID of the card to assign. |
+| `USER_ID` | Yes | The Nextcloud user ID to assign to (e.g., `alice`). |
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+| `--unassign` | flag | `False` | Unassign the card instead of assigning. |
+
+**Examples:**
+
+```bash
+# Assign card to user
+ncdeck assign inbox 123 alice
+
+# Unassign card
+ncdeck assign inbox 123 alice --unassign
+```
+
 ### `ncdeck list --cards`
 
 List cards in a configured board with details.
