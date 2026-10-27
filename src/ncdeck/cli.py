@@ -56,6 +56,56 @@ class DeckClient:
     def list_stacks(self, board_id):
         return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks")
 
+    def get_stack(self, board_id, stack_id):
+        stacks = self.list_stacks(board_id)
+        for stack in stacks:
+            if stack.get('id') == int(stack_id):
+                return stack
+        return None
+
+    def list_cards(self, board_id, stack_id=None):
+        # Try to get cards via board details or stacks
+        try:
+            board = self.get_board(board_id)
+            if board and board.get('stacks'):
+                cards = []
+                for stack in board['stacks']:
+                    if stack_id is None or stack.get('id') == int(stack_id):
+                        stack_cards = stack.get('cards', [])
+                        for card in stack_cards:
+                            card['_stack_title'] = stack.get('title')
+                            card['_stack_id'] = stack.get('id')
+                        cards.extend(stack_cards)
+                return cards
+        except Exception:
+            pass
+        
+        if stack_id is not None:
+            try:
+                stack = self.get_stack(board_id, stack_id)
+                if stack and stack.get('cards'):
+                    for card in stack['cards']:
+                        card['_stack_title'] = stack.get('title')
+                        card['_stack_id'] = stack.get('id')
+                    return stack['cards']
+            except Exception:
+                pass
+        
+        # Fallback: get all cards from all stacks
+        try:
+            stacks = self.list_stacks(board_id)
+            cards = []
+            for stack in stacks:
+                stack_cards = stack.get('cards', [])
+                for card in stack_cards:
+                    card['_stack_title'] = stack.get('title')
+                    card['_stack_id'] = stack.get('id')
+                cards.extend(stack_cards)
+            return cards
+        except Exception:
+            pass
+        return []
+
     def get_card(self, board_id, card_id):
         return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}")
 
@@ -247,7 +297,9 @@ def cli():
 @click.option("--boards", is_flag=True, help="List boards and their IDs")
 @click.option("--stacks", type=int, help="List stacks for a given board_id")
 @click.option("--labels", "labels_board", metavar="BOARD_KEY", help="List available tags/labels for a configured board")
-def list_cmd(instance, boards, stacks, labels_board):
+@click.option("--cards", "cards_board", metavar="BOARD_KEY", help="List cards in a configured board (all stacks or specify with --stack)")
+@click.option("--stack", type=int, help="Stack ID to list cards from (used with --cards)")
+def list_cmd(instance, boards, stacks, labels_board, cards_board, stack):
     """Discover boards/stacks/IDs and tags."""
     cfg = load_config()
     inst_name = instance or cfg.get("default_instance")
@@ -270,6 +322,31 @@ def list_cmd(instance, boards, stacks, labels_board):
     if stacks is not None:
         for s in client.list_stacks(stacks):
             click.echo(f"stack_id={s['id']} title={s['title']} order={s.get('order')}")
+        return
+
+    if cards_board:
+        inst_name_res, inst_res, board = get_mapping(cfg, instance, cards_board)
+        try:
+            cards = client.list_cards(board["board_id"], stack_id=stack)
+            if stack:
+                click.echo(f"Cards in stack {stack} for {inst_name_res}/{cards_board}:")
+            else:
+                click.echo(f"Cards for {inst_name_res}/{cards_board}:")
+            if not cards:
+                click.echo("  (no cards found)")
+                return
+            for card in cards:
+                card_id = card.get('id')
+                title = card.get('title', '(untitled)')
+                stack_title = card.get('_stack_title') or card.get('stackTitle') or ''
+                archived = card.get('archived', False)
+                archived_str = " [ARCHIVED]" if archived else ""
+                if stack_title:
+                    click.echo(f"  #{card_id} [{stack_title}]{archived_str} {title}")
+                else:
+                    click.echo(f"  #{card_id}{archived_str} {title}")
+        except Exception as e:
+            click.echo(f"Error fetching cards: {e}", err=True)
         return
 
     if labels_board:
@@ -397,6 +474,55 @@ def move_cmd(board_key, card_id, stack_id, instance):
     try:
         result = client.move_card(board["board_id"], card_id, stack_id)
         click.echo(f"Moved card #{card_id} to stack {stack_id} in {inst_name}/{board_key}")
+    except requests.HTTPError as e:
+        click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("search")
+@click.argument("board_key")
+@click.argument("query")
+@click.option("-i", "--instance", help="Instance name from config")
+@click.option("--stack", type=int, help="Limit search to specific stack ID")
+@click.option("--include-archived", is_flag=True, help="Include archived cards in search")
+def search_cmd(board_key, query, instance, stack, include_archived):
+    """Search for cards containing a keyword or string. Example: ncdeck search inbox bug"""
+    cfg = load_config()
+    inst_name, inst, board = get_mapping(cfg, instance, board_key)
+    client = DeckClient(inst)
+
+    try:
+        cards = client.list_cards(board["board_id"], stack_id=stack)
+        query_lower = query.lower()
+        results = []
+        for card in cards:
+            if not include_archived and card.get('archived'):
+                continue
+            title = card.get('title', '') or ''
+            description = card.get('description', '') or ''
+            if query_lower in title.lower() or query_lower in description.lower():
+                results.append(card)
+
+        if not results:
+            click.echo(f"No cards found matching '{query}' in {inst_name}/{board_key}")
+            return
+
+        click.echo(f"Found {len(results)} card(s) matching '{query}' in {inst_name}/{board_key}:")
+        for card in results:
+            card_id = card.get('id')
+            title = card.get('title', '(untitled)')
+            stack_title = card.get('_stack_title') or card.get('stackTitle') or ''
+            archived = card.get('archived', False)
+            archived_str = " [ARCHIVED]" if archived else ""
+            if stack_title:
+                click.echo(f"  #{card_id} [{stack_title}]{archived_str} {title}")
+            else:
+                click.echo(f"  #{card_id}{archived_str} {title}")
+            if card.get('duedate'):
+                click.echo(f"    Due: {card['duedate']}")
     except requests.HTTPError as e:
         click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
         sys.exit(1)
