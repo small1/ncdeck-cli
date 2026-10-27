@@ -64,14 +64,31 @@ class DeckClient:
         return None
 
     def list_cards(self, board_id, stack_id=None):
-        # Try to get cards via board details or stacks
+        # Get all stacks with their cards
+        try:
+            stacks = self.list_stacks(board_id)
+            cards = []
+            for stack in stacks:
+                if stack_id is not None and stack.get('id') != int(stack_id):
+                    continue
+                stack_cards = stack.get('cards', []) or []
+                for card in stack_cards:
+                    card['_stack_title'] = stack.get('title')
+                    card['_stack_id'] = stack.get('id')
+                cards.extend(stack_cards)
+            if cards:
+                return cards
+        except Exception:
+            pass
+        
+        # Fallback: try board details
         try:
             board = self.get_board(board_id)
             if board and board.get('stacks'):
                 cards = []
                 for stack in board['stacks']:
                     if stack_id is None or stack.get('id') == int(stack_id):
-                        stack_cards = stack.get('cards', [])
+                        stack_cards = stack.get('cards', []) or []
                         for card in stack_cards:
                             card['_stack_title'] = stack.get('title')
                             card['_stack_id'] = stack.get('id')
@@ -91,19 +108,6 @@ class DeckClient:
             except Exception:
                 pass
         
-        # Fallback: get all cards from all stacks
-        try:
-            stacks = self.list_stacks(board_id)
-            cards = []
-            for stack in stacks:
-                stack_cards = stack.get('cards', [])
-                for card in stack_cards:
-                    card['_stack_title'] = stack.get('title')
-                    card['_stack_id'] = stack.get('id')
-                cards.extend(stack_cards)
-            return cards
-        except Exception:
-            pass
         return []
 
     def get_card(self, board_id, card_id):
