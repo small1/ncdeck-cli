@@ -37,6 +37,16 @@ class DeckClient:
         r.raise_for_status()
         return r.json()
 
+    def _put(self, path, data):
+        r = self.session.put(f"{self.url}{path}", data=json.dumps(data))
+        r.raise_for_status()
+        return r.json()
+
+    def _delete(self, path):
+        r = self.session.delete(f"{self.url}{path}")
+        r.raise_for_status()
+        return r.json()
+
     def list_boards(self):
         return self._get("/index.php/apps/deck/api/v1.0/boards")
 
@@ -45,6 +55,48 @@ class DeckClient:
 
     def list_stacks(self, board_id):
         return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks")
+
+    def get_card(self, board_id, card_id):
+        return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}")
+
+    def update_card(self, board_id, card_id, stack_id=None, title=None, description=None, duedate=None, archived=None):
+        # Get current card data first
+        card = self.get_card(board_id, card_id)
+        payload = card
+        
+        if stack_id is not None:
+            payload["stackId"] = int(stack_id)
+        if title is not None:
+            payload["title"] = title
+        if description is not None:
+            payload["description"] = description
+        if duedate is not None:
+            payload["duedate"] = duedate
+        if archived is not None:
+            payload["archived"] = bool(archived)
+        
+        return self._put(
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}",
+            payload,
+        )
+
+    def move_card(self, board_id, card_id, stack_id):
+        card = self.get_card(board_id, card_id)
+        payload = card
+        payload["stackId"] = int(stack_id)
+        return self._put(
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}",
+            payload,
+        )
+
+    def archive_card(self, board_id, card_id, archived=True):
+        card = self.get_card(board_id, card_id)
+        payload = card
+        payload["archived"] = bool(archived)
+        return self._put(
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}",
+            payload,
+        )
 
     def list_labels(self, board_id):
         # Try different API endpoints for compatibility
@@ -249,7 +301,10 @@ def list_cmd(instance, boards, stacks, labels_board):
 
     click.echo(f"Instance: {inst_name} ({inst['url']})")
     for k, v in inst.get("boards", {}).items():
-        click.echo(f"  - {k}: board_id={v['board_id']} stack_id={v['stack_id']}")
+        done_info = ""
+        if v.get("done_stack_id"):
+            done_info = f" done_stack_id={v['done_stack_id']}"
+        click.echo(f"  - {k}: board_id={v['board_id']} stack_id={v['stack_id']}{done_info}")
 
 
 @cli.command("create")
@@ -285,6 +340,63 @@ def create_cmd(board_key, title, description, description_file, prefix, due_date
             click.echo(f"  Due: {due_date}")
         if tag:
             click.echo(f"  Tags: {', '.join(tag)}")
+    except requests.HTTPError as e:
+        click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("done")
+@click.argument("board_key")
+@click.argument("card_id", type=int)
+@click.option("-i", "--instance", help="Instance name from config")
+@click.option("--stack", type=int, help="Override done stack (default from config)")
+@click.option("--archive", is_flag=True, help="Archive the card instead of moving to done stack")
+def done_cmd(board_key, card_id, instance, stack, archive):
+    """Mark a card as done and move to default done stack. Example: ncdeck done inbox 123"""
+    cfg = load_config()
+    inst_name, inst, board = get_mapping(cfg, instance, board_key)
+    client = DeckClient(inst)
+
+    try:
+        if archive:
+            result = client.archive_card(board["board_id"], card_id, archived=True)
+            click.echo(f"Archived card #{card_id} in {inst_name}/{board_key}")
+            return
+
+        done_stack_id = stack if stack is not None else board.get("done_stack_id")
+        if done_stack_id is None:
+            raise click.ClickException(
+                f"No done stack configured for board '{board_key}'. "
+                f"Add 'done_stack_id' to the board mapping in config, or use --stack."
+            )
+
+        result = client.move_card(board["board_id"], card_id, done_stack_id)
+        click.echo(f"Marked card #{card_id} as done and moved to done stack in {inst_name}/{board_key}")
+    except requests.HTTPError as e:
+        click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("move")
+@click.argument("board_key")
+@click.argument("card_id", type=int)
+@click.argument("stack_id", type=int)
+@click.option("-i", "--instance", help="Instance name from config")
+def move_cmd(board_key, card_id, stack_id, instance):
+    """Move a card to a different stack. Example: ncdeck move inbox 123 7"""
+    cfg = load_config()
+    inst_name, inst, board = get_mapping(cfg, instance, board_key)
+    client = DeckClient(inst)
+
+    try:
+        result = client.move_card(board["board_id"], card_id, stack_id)
+        click.echo(f"Moved card #{card_id} to stack {stack_id} in {inst_name}/{board_key}")
     except requests.HTTPError as e:
         click.echo(f"HTTP error: {e} - {e.response.text}", err=True)
         sys.exit(1)
