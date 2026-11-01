@@ -156,6 +156,31 @@ ncdeck list --labels inbox
 
 ## Commands
 
+### `ncdeck add-account`
+
+Interactive wizard to add a Nextcloud account using Nextcloud Login Flow v2. Opens a browser for authentication, auto-discovers boards and stacks, lets you assign short names to boards, select done stacks, and merges into your existing config.
+
+```text
+Usage: ncdeck add-account [OPTIONS]
+```
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `-i, --instance TEXT` | `string` | `prompted` | Short name for this instance. |
+| `--url TEXT` | `string` | `prompted` | Nextcloud server URL (e.g., `https://cloud.example.com`). |
+
+The wizard will:
+1. Start Login Flow v2 and open your browser for authentication
+2. Wait for you to approve the login in Nextcloud
+3. Auto-discover all boards accessible to your account
+4. For each board, ask for a short name (easy to remember)
+5. Show available stacks and ask which one to use for creating cards
+6. Ask which stack should be the "done" stack for `ncdeck done`
+7. Ask if this should be the default instance
+8. Save to your existing config (preserving other accounts)
+
 ### `ncdeck list`
 
 Used to discover boards, stacks, and labels/tags.
