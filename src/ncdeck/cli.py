@@ -134,10 +134,17 @@ def cli():
     """Create Nextcloud Deck cards from the CLI."""
     pass
 
-@cli.command("add-account")
+
+@cli.group()
+def account():
+    """Manage Nextcloud accounts."""
+    pass
+
+
+@account.command("add")
 @click.option("-i", "--instance", "instance_name", help="Short name for this instance")
 @click.option("--url", help="Nextcloud server URL")
-def add_account_cmd(instance_name, url):
+def account_add_cmd(instance_name, url):
     """Add a Nextcloud account via Login Flow v2 with board autodiscovery."""
     cfg = load_config()
     if not isinstance(cfg, dict): cfg = {}
@@ -199,12 +206,12 @@ def add_account_cmd(instance_name, url):
     save_config(cfg)
     click.echo(f"\n{'='*50}\nConfiguration saved to {get_config_path()}\nInstance '{instance_name}' added with {len(boards_config)} board(s)\n{'='*50}")
 
-@cli.command("list-accounts")
-def list_accounts_cmd():
+@account.command("list")
+def account_list_cmd():
     """List configured accounts/instances."""
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
-        click.echo("No accounts configured. Run `ncdeck add-account` to add one."); return
+        click.echo("No accounts configured. Run `ncdeck account add` to add one."); return
     default = cfg.get('default_instance')
     click.echo(f"Configured instances (default: {default or 'none'}):")
     for name, inst in cfg.get('instances', {}).items():
@@ -213,6 +220,32 @@ def list_accounts_cmd():
         for bk,bv in (inst.get('boards') or {}).items():
             done = f", done_stack={bv.get('done_stack_id')}" if bv.get('done_stack_id') else ""
             click.echo(f"    {bk}: board_id={bv.get('board_id')}, stack_id={bv.get('stack_id')}{done}")
+
+
+@account.command("delete")
+@click.argument("instance_name")
+@click.option("-f", "--force", is_flag=True, help="Force deletion without confirmation")
+def account_delete_cmd(instance_name, force):
+    """Delete a configured account."""
+    cfg = load_config()
+    if not isinstance(cfg, dict):
+        raise click.ClickException("No configuration found")
+    if 'instances' not in cfg or instance_name not in cfg['instances']:
+        raise click.ClickException(f"Instance '{instance_name}' not found in config")
+    if not force:
+        if not click.confirm(f"Delete instance '{instance_name}'?"):
+            click.echo("Cancelled")
+            return
+    del cfg['instances'][instance_name]
+    if cfg.get('default_instance') == instance_name:
+        if cfg['instances']:
+            new_default = next(iter(cfg['instances'].keys()))
+            cfg['default_instance'] = new_default
+            click.echo(f"Default instance changed to '{new_default}'")
+        else:
+            cfg.pop('default_instance', None)
+    save_config(cfg)
+    click.echo(f"Deleted instance '{instance_name}'")
 
 @cli.command("show-config")
 def show_config_cmd():
