@@ -2,6 +2,8 @@
 import os
 import sys
 import json
+import time
+import webbrowser
 from pathlib import Path
 from typing import Optional, List
 
@@ -14,6 +16,16 @@ CONFIG_PATHS = [
     Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ncdeck" / "config.yaml",
     Path.home() / ".ncdeck.yaml",
 ]
+
+
+def get_config_path():
+    for p in CONFIG_PATHS:
+        if p.exists():
+            return p
+    # Default to XDG location
+    p = CONFIG_PATHS[0]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 class DeckClient:
@@ -233,10 +245,15 @@ def load_config():
     for p in CONFIG_PATHS:
         if p.exists():
             with p.open() as f:
-                return yaml.safe_load(f)
-    raise click.ClickException(
-        f"No config found. Create one at {CONFIG_PATHS[0]} (see docs)."
-    )
+                return yaml.safe_load(f) or {}
+    return {}
+
+
+def save_config(cfg):
+    p = get_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open('w') as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
 
 
 def get_mapping(cfg, instance_name: Optional[str], board_key: str):
@@ -699,3 +716,157 @@ def show_cmd(board_key, card_id, instance):
 
 if __name__ == "__main__":
     cli()
+
+
+@cli.command("add-account")
+@click.option("-i", "--instance", "instance_name", help="Short name for this instance")
+@click.option("--url", help="Nextcloud server URL")
+def add_account_cmd(instance_name, url):
+    """Add a Nextcloud account via Login Flow v2 with board autodiscovery."""
+    cfg = load_config()
+    if not isinstance(cfg, dict):
+        cfg = {}
+    if 'instances' not in cfg or not isinstance(cfg['instances'], dict):
+        cfg['instances'] = {}
+
+    if not url:
+        url = click.prompt("Nextcloud server URL (e.g. https://cloud.example.com)")
+    url = url.rstrip('/')
+
+    click.echo(f"\nStarting Nextcloud Login Flow v2 for {url}...")
+    try:
+        resp = requests.post(
+            f"{url}/index.php/login/v2",
+            headers={"User-Agent": "ncdeck-cli"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        flow = resp.json()
+        login_url = flow['login']
+        poll = flow['poll']
+        endpoint = poll['endpoint']
+        token = poll['token']
+    except Exception as e:
+        raise click.ClickException(f"Failed to initiate login flow: {e}")
+
+    click.echo(f"\nOpening browser to authenticate...")
+    click.echo(f"If browser doesn't open, visit: {login_url}")
+    try:
+        webbrowser.open(login_url)
+    except Exception:
+        pass
+
+    click.echo("\nWaiting for authentication (press Ctrl+C to cancel)...")
+    creds = None
+    for _ in range(120):
+        try:
+            r = requests.post(endpoint, data={"token": token}, timeout=30)
+            if r.status_code == 200:
+                creds = r.json()
+                break
+            time.sleep(2)
+        except Exception:
+            time.sleep(2)
+            continue
+
+    if not creds:
+        raise click.ClickException("Authentication timed out or failed")
+
+    server = creds.get('server', url)
+    login_name = creds.get('loginName') or creds.get('user')
+    app_password = creds.get('appPassword')
+
+    click.echo(f"\nAuthenticated as {login_name} on {server}")
+
+    if not instance_name:
+        if instance_name in cfg['instances']:
+            instance_name = click.prompt("Short name for this instance (already exists)", default=f"{login_name}_new")
+        else:
+            instance_name = click.prompt("Short name for this instance", default=login_name)
+
+    inst_cfg = {
+        "url": server.rstrip('/'),
+        "username": login_name,
+        "password": app_password,
+    }
+    client = DeckClient(inst_cfg)
+
+    click.echo("\nDiscovering boards...")
+    try:
+        boards = client.list_boards()
+    except Exception as e:
+        raise click.ClickException(f"Failed to list boards: {e}")
+
+    if not boards:
+        click.echo("No boards found.")
+        boards_config = {}
+    else:
+        click.echo(f"Found {len(boards)} board(s)")
+        boards_config = {}
+        for board in boards:
+            board_id = board['id']
+            board_title = board['title']
+            click.echo(f"\n{'='*50}")
+            click.echo(f"Board: {board_title} (id: {board_id})")
+            
+            default_key = ''.join(c.lower() if c.isalnum() else '_' for c in board_title)
+            default_key = '_'.join(filter(None, default_key.split('_')))
+            if not default_key:
+                default_key = f"board_{board_id}"
+            
+            board_key = click.prompt("Short name for this board", default=default_key)
+            board_key = ''.join(c if c.isalnum() or c in ['_', '-'] else '_' for c in board_key)
+            
+            try:
+                stacks = client.list_stacks(board_id)
+            except Exception as e:
+                click.echo(f"Error fetching stacks: {e}")
+                stacks = []
+            
+            stack_id = None
+            done_stack_id = None
+            if stacks:
+                click.echo("\nStacks:")
+                for i, s in enumerate(stacks):
+                    click.echo(f"  {i+1}. {s['title']} (id: {s['id']})")
+                
+                stack_choices = [s['id'] for s in stacks]
+                stack_default = stack_choices[0] if stack_choices else None
+                stack_id = click.prompt("Stack ID for creating new cards", default=stack_default, type=int)
+                
+                click.echo("\nWhich stack should be the 'done' stack?")
+                click.echo("  0. None")
+                for i, s in enumerate(stacks):
+                    click.echo(f"  {i+1}. {s['title']} (id: {s['id']})")
+                done_choice = click.prompt("Done stack", default=0, type=int)
+                if done_choice > 0 and done_choice <= len(stacks):
+                    done_stack_id = stacks[done_choice-1]['id']
+            else:
+                stack_id = click.prompt("Stack ID for creating new cards", type=int)
+            
+            board_entry = {
+                "board_id": board_id,
+                "stack_id": stack_id,
+            }
+            if done_stack_id:
+                board_entry["done_stack_id"] = done_stack_id
+            boards_config[board_key] = board_entry
+
+    cfg['instances'][instance_name] = {
+        "url": server.rstrip('/'),
+        "username": login_name,
+        "password": app_password,
+        "boards": boards_config,
+    }
+
+    if not cfg.get('default_instance'):
+        cfg['default_instance'] = instance_name
+        click.echo(f"\nSet '{instance_name}' as default instance")
+    elif click.confirm(f"\nSet '{instance_name}' as default instance?", default=False):
+        cfg['default_instance'] = instance_name
+
+    save_config(cfg)
+    click.echo(f"\n{'='*50}")
+    click.echo(f"Configuration saved to {get_config_path()}")
+    click.echo(f"Instance '{instance_name}' added with {len(boards_config)} board(s)")
+    click.echo(f"{'='*50}")
