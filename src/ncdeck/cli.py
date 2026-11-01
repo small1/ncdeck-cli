@@ -222,8 +222,7 @@ def show_config_cmd():
     masked = json.loads(json.dumps(cfg))
     for inst_name, inst in masked.get('instances', {}).items():
         if isinstance(inst, dict) and inst.get('password'):
-            pwd = inst['password']
-            inst['password'] = (pwd[:4]+'****'+pwd[-4:]) if len(pwd)>8 else '****'
+            inst['password'] = '****'
     click.echo(yaml.safe_dump(masked, sort_keys=False))
 
 @cli.command("list")
