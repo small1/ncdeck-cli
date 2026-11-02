@@ -111,34 +111,42 @@ class DeckClient:
         except Exception:
             pass
         stack_id = (card.get('stackId') if card else None) or -1
-        last_err = None
         
-        # Try direct file upload to various endpoints
-        endpoints = [
-            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment",
-            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
-            f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment",
-            f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
-        ]
-        for ep in endpoints:
+        # Get request token
+        try:
+            r = self.session.get(f"{self.url}/index.php/apps/deck/")
+            import re
+            m = re.search(r'requesttoken["\']?\s*[:=]\s*["\']([^"\']+)', r.text)
+            if m:
+                self.session.headers.update({"requesttoken": m.group(1)})
+        except Exception:
+            pass
+        
+        headers = dict(self.session.headers)
+        headers['OCS-APIREQUEST'] = 'true'
+        headers.pop('Content-Type', None)
+        
+        # Try different approaches
+        try:
+            with p.open('rb') as f:
+                files = {'file': (p.name, f)}
+                r = self.session.post(f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment?type=file", files=files, headers=headers)
+                if r.status_code in [200, 201]:
+                    try:
+                        return r.json()
+                    except:
+                        return r.text
+        except Exception as e:
+            last_err = e
+        else:
+            last_err = None
+        
+        if last_err:
             try:
                 with p.open('rb') as f:
-                    headers = dict(self.session.headers)
-                    headers.pop('Content-Type', None)
-                    headers['OCS-APIREQUEST'] = 'true'
                     files = {'file': (p.name, f)}
-                    r = self.session.post(f"{self.url}{ep}", files=files, headers=headers)
-                    if r.status_code in [200, 201]:
-                        try:
-                            return r.json()
-                        except:
-                            return r.text
-                with p.open('rb') as f:
-                    headers = dict(self.session.headers)
-                    headers.pop('Content-Type', None)
-                    headers['OCS-APIREQUEST'] = 'true'
-                    files = {'attachment': (p.name, f)}
-                    r = self.session.post(f"{self.url}{ep}", files=files, headers=headers)
+                    headers2 = dict(headers)
+                    r = self.session.post(f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment?type=file", files=files, headers=headers2)
                     if r.status_code in [200, 201]:
                         try:
                             return r.json()
@@ -146,33 +154,34 @@ class DeckClient:
                             return r.text
             except Exception as e:
                 last_err = e
-                continue
         
-        # Try uploading to files app first
+        # Upload to files and try to attach
         try:
             filename = p.name
-            dav_url = f"{self.url}/remote.php/webdav/{filename}"
             with p.open('rb') as f:
-                r = self.session.put(dav_url, data=f)
+                r = self.session.put(f"{self.url}/remote.php/webdav/{filename}", data=f)
             if r.status_code in [201, 204]:
-                for ep in endpoints:
-                    try:
-                        headers = dict(self.session.headers)
-                        headers['OCS-APIREQUEST'] = 'true'
-                        headers['Content-Type'] = 'application/json'
-                        payload = {"type": "file", "path": filename}
-                        r2 = self.session.post(f"{self.url}{ep}", json=payload, headers=headers)
-                        if r2.status_code in [200, 201]:
-                            try:
-                                return r2.json()
-                            except:
-                                return r2.text
-                    except:
-                        continue
+                headers['Content-Type'] = 'application/json'
+                # Try to find file id
+                try:
+                    r = self.session.post(f"{self.url}/ocs/v2.php/apps/files_sharing/api/v1/shares", data={"path": f"/{filename}", "shareType": 3}, headers={'OCS-APIREQUEST': 'true'})
+                except:
+                    pass
+                for ep in [f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment", f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment"]:
+                    for payload in [{"type": "file", "fileId": filename}, {"type": "file", "path": f"/{filename}"}]:
+                        try:
+                            r2 = self.session.post(f"{self.url}{ep}", json=payload, headers=headers)
+                            if r2.status_code in [200, 201]:
+                                try:
+                                    return r2.json()
+                                except:
+                                    return r2.text
+                        except:
+                            continue
         except Exception as e:
             last_err = e
         
-        raise last_err if last_err else Exception("Failed to upload attachment")
+        raise last_err if last_err else Exception("Failed to upload attachment. Deck API may not support file uploads in this version.")
 
 def get_mapping(cfg, instance_name: Optional[str], board_key: str):
     inst_name = instance_name or cfg.get("default_instance")
