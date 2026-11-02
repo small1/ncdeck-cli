@@ -492,9 +492,11 @@ def assign_cmd(board_key,card_id,user_id,instance,unassign):
 @click.argument("card_id",type=int)
 @click.argument("file_path",type=click.Path(exists=True,path_type=Path))
 @click.option("-i","--instance")
-def attach_cmd(board_key,card_id,file_path,instance):
+@click.pass_context
+def attach_cmd(ctx,board_key,card_id,file_path,instance):
     """Attach a file to an existing card."""
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
         client.upload_attachment(board["board_id"],card_id,file_path)
         click.echo(f"Attached {file_path.name} to card #{card_id} in {inst_name}/{board_key}")
