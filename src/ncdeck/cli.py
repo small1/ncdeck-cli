@@ -33,6 +33,12 @@ class DeckClient:
         r = self.session.get(f"{self.url}{path}"); r.raise_for_status(); return r.json()
     def _post(self, path, data):
         r = self.session.post(f"{self.url}{path}", data=json.dumps(data)); r.raise_for_status(); return r.json()
+    def _post_file(self, path, files, data=None):
+        headers = dict(self.session.headers)
+        headers.pop('Content-Type', None)
+        r = self.session.post(f"{self.url}{path}", files=files, data=data, headers=headers)
+        r.raise_for_status()
+        return r.json()
     def _put(self, path, data):
         r = self.session.put(f"{self.url}{path}", data=json.dumps(data)); r.raise_for_status(); return r.json()
     def list_boards(self): return self._get("/index.php/apps/deck/api/v1.0/boards")
@@ -94,6 +100,12 @@ class DeckClient:
         if labels: payload["labels"]=[{"id":int(l)} for l in labels]
         if assigned_users: payload["assignedUsers"]=[{"participant":{"primaryKey":u}} for u in assigned_users]
         return self._post(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards", payload)
+
+    def upload_attachment(self, board_id, card_id, file_path):
+        p = Path(file_path)
+        with p.open('rb') as f:
+            files = {'file': (p.name, f)}
+            return self._post_file(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment", files)
 
 def get_mapping(cfg, instance_name: Optional[str], board_key: str):
     inst_name = instance_name or cfg.get("default_instance")
@@ -319,8 +331,9 @@ def list_cmd(instance,boards,stacks,labels_board,cards_board,stack):
 @click.option("--due-date")
 @click.option("-t","--tag",multiple=True)
 @click.option("-a","--assign",multiple=True)
+@click.option("--attach",type=click.Path(exists=True,path_type=Path),multiple=True,help="Attach file(s) to the created card")
 @click.option("-i","--instance")
-def create_cmd(board_key,title,description,description_file,prefix,due_date,tag,assign,instance):
+def create_cmd(board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
     ct=f"{prefix}{title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
@@ -330,6 +343,12 @@ def create_cmd(board_key,title,description,description_file,prefix,due_date,tag,
         if due_date: click.echo(f"  Due: {due_date}")
         if tag: click.echo(f"  Tags: {', '.join(tag)}")
         if assign: click.echo(f"  Assigned: {', '.join(assign)}")
+        for a in attach:
+            try:
+                client.upload_attachment(board["board_id"], card['id'], a)
+                click.echo(f"  Attached: {Path(a).name}")
+            except Exception as e:
+                click.echo(f"  Failed to attach {Path(a).name}: {e}", err=True)
     except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
 
 @cli.command("done")
@@ -368,6 +387,20 @@ def assign_cmd(board_key,card_id,user_id,instance,unassign):
     try:
         if unassign: client.unassign_card(board["board_id"],card_id); click.echo(f"Unassigned card #{card_id}")
         else: client.assign_card(board["board_id"],card_id,user_id); click.echo(f"Assigned card #{card_id} to {user_id}")
+    except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
+
+
+@cli.command("attach")
+@click.argument("board_key")
+@click.argument("card_id",type=int)
+@click.argument("file_path",type=click.Path(exists=True,path_type=Path))
+@click.option("-i","--instance")
+def attach_cmd(board_key,card_id,file_path,instance):
+    """Attach a file to an existing card."""
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+    try:
+        client.upload_attachment(board["board_id"],card_id,file_path)
+        click.echo(f"Attached {file_path.name} to card #{card_id} in {inst_name}/{board_key}")
     except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
 
 @cli.command("search")
