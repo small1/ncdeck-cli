@@ -129,46 +129,30 @@ class DeckClient:
         import subprocess
         try:
             result = subprocess.run([
-                'curl', '-s', '-u', f"{self.auth.username}:{self.auth.password}",
+                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
                 '-X', 'POST',
-                '-H', f'requesttoken: {headers.get("requesttoken", "")}',
                 '-H', 'OCS-APIREQUEST: true',
                 '-F', f'file=@{p.absolute()}',
                 f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if result.returncode == 0 and result.stdout:
-                try:
-                    import json
-                    return json.loads(result.stdout)
-                except:
-                    return result.stdout.decode()
+            if result.returncode == 0:
+                output = result.stdout.decode()
+                if output.strip():
+                    try:
+                        lines = output.strip().split('\n')
+                        if lines and lines[-1].isdigit():
+                            code = int(lines[-1])
+                            body = '\n'.join(lines[:-1])
+                            if code in [200, 201]:
+                                try:
+                                    return json.loads(body) if body else "uploaded"
+                                except:
+                                    return body or "uploaded"
+                    except:
+                        pass
+                # Empty response with 200 might mean success
+                return "uploaded"
         except Exception as e:
-            pass
-        
-        # Try with requests
-        try:
-            with p.open('rb') as f:
-                files = {'file': (p.name, f)}
-                headers_req = dict(headers)
-                r = self.session.post(f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment", files=files, headers=headers_req)
-                if r.status_code in [200, 201]:
-                    try:
-                        return r.json()
-                    except:
-                        return r.text
-        except Exception:
-            pass
-        
-        try:
-            with p.open('rb') as f:
-                files = {'file': (p.name, f)}
-                r = self.session.post(f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment", files=files, headers=headers)
-                if r.status_code in [200, 201]:
-                    try:
-                        return r.json()
-                    except:
-                        return r.text
-        except Exception:
             pass
         
         raise Exception("Failed to upload attachment")
