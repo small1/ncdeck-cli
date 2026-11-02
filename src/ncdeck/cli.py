@@ -103,9 +103,30 @@ class DeckClient:
 
     def upload_attachment(self, board_id, card_id, file_path):
         p = Path(file_path)
-        with p.open('rb') as f:
-            files = {'file': (p.name, f)}
-            return self._post_file(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment", files)
+        # Try different endpoints for compatibility
+        try:
+            with p.open('rb') as f:
+                files = {'file': (p.name, f)}
+                return self._post_file(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment", files)
+        except requests.HTTPError as e:
+            if e.response.status_code in [405, 404]:
+                try:
+                    with p.open('rb') as f:
+                        files = {'file': (p.name, f)}
+                        return self._post_file(f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/-1/cards/{card_id}/attachment", files)
+                except Exception:
+                    pass
+                try:
+                    with p.open('rb') as f:
+                        headers = dict(self.session.headers)
+                        headers.pop('Content-Type', None)
+                        files = {'file': (p.name, f)}
+                        r = self.session.post(f"{self.url}/index.php/apps/deck/api/v1.0/cards/{card_id}/attachment", files=files, headers=headers)
+                        r.raise_for_status()
+                        return r.json()
+                except Exception:
+                    pass
+            raise
 
 def get_mapping(cfg, instance_name: Optional[str], board_key: str):
     inst_name = instance_name or cfg.get("default_instance")
