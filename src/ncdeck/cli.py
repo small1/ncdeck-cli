@@ -148,6 +148,9 @@ class DeckClient:
         stack_id = (card.get('stackId') if card else None) or -1
         
         import subprocess
+        if self.debug:
+            click.echo(f"[DEBUG] GET card to find stack", err=True)
+        # Try with actual stack
         try:
             result = subprocess.run([
                 'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
@@ -156,6 +159,8 @@ class DeckClient:
                 '-F', f'file=@{p.absolute()}',
                 f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if self.debug:
+                click.echo(f"[DEBUG] curl tried stack {stack_id}, rc={result.returncode}", err=True)
             if result.returncode == 0:
                 output = result.stdout.decode()
                 try:
@@ -180,6 +185,8 @@ class DeckClient:
                 '-F', f'file=@{p.absolute()}',
                 f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/cards/{card_id}/attachment"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if self.debug:
+                click.echo(f"[DEBUG] curl tried without stack, rc={result.returncode}", err=True)
             if result.returncode == 0:
                 output = result.stdout.decode()
                 try:
