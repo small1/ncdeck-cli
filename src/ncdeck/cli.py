@@ -112,31 +112,27 @@ class DeckClient:
             pass
         stack_id = (card.get('stackId') if card else None) or -1
         last_err = None
-        # Try different approaches
-        approaches = []
-        # Standard Deck API
-        approaches.append(("post", f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment"))
-        approaches.append(("post", f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment"))
-        approaches.append(("post", f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment"))
-        approaches.append(("post", f"/index.php/apps/deck/cards/{card_id}/attachment"))
-        approaches.append(("post", f"/index.php/apps/deck/api/v1.0/cards/{card_id}/attachment"))
         
-        for method, ep in approaches:
+        # Try direct file upload to various endpoints
+        endpoints = [
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
+        ]
+        for ep in endpoints:
             try:
                 with p.open('rb') as f:
                     headers = dict(self.session.headers)
                     headers.pop('Content-Type', None)
                     headers['OCS-APIREQUEST'] = 'true'
-                    headers['requesttoken'] = getattr(self.session, 'requesttoken', '') if hasattr(self.session, 'requesttoken') else headers.get('requesttoken', '')
-                    # Try as multipart form
-                    files = {'file': (p.name, f, 'application/octet-stream')}
+                    files = {'file': (p.name, f)}
                     r = self.session.post(f"{self.url}{ep}", files=files, headers=headers)
                     if r.status_code in [200, 201]:
                         try:
                             return r.json()
-                        except Exception:
+                        except:
                             return r.text
-                # If file was consumed, reopen
                 with p.open('rb') as f:
                     headers = dict(self.session.headers)
                     headers.pop('Content-Type', None)
@@ -146,27 +142,26 @@ class DeckClient:
                     if r.status_code in [200, 201]:
                         try:
                             return r.json()
-                        except Exception:
+                        except:
                             return r.text
             except Exception as e:
                 last_err = e
                 continue
         
-        # Try WebDAV upload to Nextcloud files then attach
+        # Try uploading to files app first
         try:
-            dav_url = f"{self.url}/remote.php/dav/files/{self.auth.username}/{p.name}"
+            filename = p.name
+            dav_url = f"{self.url}/remote.php/webdav/{filename}"
             with p.open('rb') as f:
-                headers = dict(self.session.headers)
-                headers['Content-Type'] = 'application/octet-stream'
-                headers['OCS-APIREQUEST'] = 'true'
-                r = self.session.put(dav_url, data=f, headers=headers)
+                r = self.session.put(dav_url, data=f)
             if r.status_code in [201, 204]:
-                # Try to attach by path
-                for ep in [f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment", f"/index.php/apps/deck/api/v1.0/cards/{card_id}/attachment"]:
+                for ep in endpoints:
                     try:
                         headers = dict(self.session.headers)
                         headers['OCS-APIREQUEST'] = 'true'
-                        r2 = self.session.post(f"{self.url}{ep}", json={"type": "file", "fileId": p.name}, headers=headers)
+                        headers['Content-Type'] = 'application/json'
+                        payload = {"type": "file", "path": filename}
+                        r2 = self.session.post(f"{self.url}{ep}", json=payload, headers=headers)
                         if r2.status_code in [200, 201]:
                             try:
                                 return r2.json()
