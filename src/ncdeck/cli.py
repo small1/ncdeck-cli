@@ -112,20 +112,6 @@ class DeckClient:
             pass
         stack_id = (card.get('stackId') if card else None) or -1
         
-        # Get request token
-        try:
-            r = self.session.get(f"{self.url}/index.php/apps/deck/")
-            import re
-            m = re.search(r'requesttoken["\']?\s*[:=]\s*["\']([^"\']+)', r.text)
-            if m:
-                self.session.headers.update({"requesttoken": m.group(1)})
-        except Exception:
-            pass
-        
-        headers = dict(self.session.headers)
-        headers.pop('Content-Type', None)
-        
-        # Try using curl for better compatibility
         import subprocess
         try:
             result = subprocess.run([
@@ -137,22 +123,39 @@ class DeckClient:
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if result.returncode == 0:
                 output = result.stdout.decode()
-                if output.strip():
-                    try:
-                        lines = output.strip().split('\n')
-                        if lines and lines[-1].isdigit():
-                            code = int(lines[-1])
-                            body = '\n'.join(lines[:-1])
-                            if code in [200, 201]:
-                                try:
-                                    return json.loads(body) if body else "uploaded"
-                                except:
-                                    return body or "uploaded"
-                    except:
-                        pass
-                # Empty response with 200 might mean success
-                return "uploaded"
-        except Exception as e:
+                try:
+                    lines = output.strip().split('\n')
+                    if lines and lines[-1].isdigit():
+                        code = int(lines[-1])
+                        if code in [200, 201]:
+                            return "uploaded"
+                except:
+                    pass
+                if not output.strip():
+                    return "uploaded"
+        except Exception:
+            pass
+        
+        # Try without stack
+        try:
+            result = subprocess.run([
+                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
+                '-X', 'POST',
+                '-H', 'OCS-APIREQUEST: true',
+                '-F', f'file=@{p.absolute()}',
+                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/cards/{card_id}/attachment"
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if result.returncode == 0:
+                output = result.stdout.decode()
+                try:
+                    lines = output.strip().split('\n')
+                    if lines and lines[-1].isdigit():
+                        code = int(lines[-1])
+                        if code in [200, 201]:
+                            return "uploaded"
+                except:
+                    pass
+        except Exception:
             pass
         
         raise Exception("Failed to upload attachment")
