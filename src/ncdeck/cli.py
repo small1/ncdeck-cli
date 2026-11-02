@@ -195,6 +195,7 @@ def resolve_label_ids(client: DeckClient, board_id: int, tag_names: List[str]) -
     return resolved
 
 @click.group()
+@click.version_option(version="0.2.0", prog_name="ncdeck")
 def cli():
     """Create Nextcloud Deck cards from the CLI."""
     pass
