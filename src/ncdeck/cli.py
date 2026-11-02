@@ -148,33 +148,40 @@ class DeckClient:
         stack_id = (card.get('stackId') if card else None) or -1
         
         import subprocess
-        if self.debug:
-            click.echo(f"[DEBUG] GET card to find stack", err=True)
+        # Try POST with multipart as per API docs
         try:
             result = subprocess.run([
-                'curl', '-s', '-u', f"{self.auth.username}:{self.auth.password}",
+                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
                 '-X', 'POST',
                 '-H', 'OCS-APIREQUEST: true',
-                '-F', f'file=@{p.absolute()}',
-                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment"
+                '-F', f'type=file',
+                '-F', f'file=@{p.absolute()};filename={p.name}',
+                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if self.debug:
-                click.echo(f"[DEBUG] curl tried stack {stack_id}, rc={result.returncode}", err=True)
-            if result.returncode == 0 and not result.stdout.decode().strip().endswith('405'):
+                click.echo(f"[DEBUG] POST multipart tried to /attachments, rc={result.returncode}", err=True)
+            output = result.stdout.decode()
+            if result.returncode == 0 and '405' not in output and '404' not in output:
                 return "uploaded"
-        except Exception:
+        except Exception as e:
+            if self.debug:
+                click.echo(f"[DEBUG] Error: {e}", err=True)
             pass
         
+        # Try with deck_file type
         try:
             result = subprocess.run([
-                'curl', '-s', '-u', f"{self.auth.username}:{self.auth.password}",
+                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
                 '-X', 'POST',
                 '-H', 'OCS-APIREQUEST: true',
-                '-F', f'file=@{p.absolute()}',
-                '-F', 'type=file',
-                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment"
+                '-F', f'type=deck_file',
+                '-F', f'file=@{p.absolute()};filename={p.name}',
+                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if result.returncode == 0 and '405' not in result.stdout.decode():
+            if self.debug:
+                click.echo(f"[DEBUG] POST multipart tried deck_file, rc={result.returncode}", err=True)
+            output = result.stdout.decode()
+            if result.returncode == 0 and '405' not in output:
                 return "uploaded"
         except Exception:
             pass
