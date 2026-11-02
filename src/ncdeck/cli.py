@@ -36,6 +36,8 @@ class DeckClient:
     def _post_file(self, path, files, data=None):
         headers = dict(self.session.headers)
         headers.pop('Content-Type', None)
+        # Try with OCS-APIRequest header for Nextcloud
+        headers['OCS-APIREQUEST'] = 'true'
         r = self.session.post(f"{self.url}{path}", files=files, data=data, headers=headers)
         r.raise_for_status()
         return r.json()
@@ -115,13 +117,23 @@ class DeckClient:
             f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
             f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment",
             f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.0/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.1/cards/{card_id}/attachment",
         ]
         last_err = None
         for ep in endpoints:
             try:
                 with p.open('rb') as f:
                     files = {'file': (p.name, f)}
-                    return self._post_file(ep, files)
+                    headers = dict(self.session.headers)
+                    headers.pop('Content-Type', None)
+                    headers['OCS-APIREQUEST'] = 'true'
+                    r = self.session.post(f"{self.url}{ep}", files=files, headers=headers)
+                    r.raise_for_status()
+                    try:
+                        return r.json()
+                    except Exception:
+                        return r.text
             except Exception as e:
                 last_err = e
                 continue
