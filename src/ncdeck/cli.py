@@ -23,26 +23,61 @@ def save_config(cfg):
     with p.open('w') as f: yaml.safe_dump(cfg, f, sort_keys=False)
 
 class DeckClient:
-    def __init__(self, instance_cfg):
+    def __init__(self, instance_cfg, debug=False):
         self.url = instance_cfg["url"].rstrip("/")
         self.auth = HTTPBasicAuth(instance_cfg["username"], instance_cfg["password"])
         self.session = requests.Session()
         self.session.auth = self.auth
         self.session.headers.update({"Accept": "application/json", "Content-Type": "application/json"})
+        self.debug = debug
+
+    def _log(self, method, url, **kwargs):
+        if self.debug:
+            click.echo(f"[DEBUG] {method} {url}", err=True)
+            if kwargs.get('data'):
+                click.echo(f"[DEBUG] DATA: {kwargs['data'][:200]}", err=True)
+            if kwargs.get('json'):
+                click.echo(f"[DEBUG] JSON: {json.dumps(kwargs['json'])[:200]}", err=True)
     def _get(self, path):
-        r = self.session.get(f"{self.url}{path}"); r.raise_for_status(); return r.json()
+        url = f"{self.url}{path}"
+        if self.debug: click.echo(f"[DEBUG] GET {url}", err=True)
+        r = self.session.get(url)
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
+        r.raise_for_status()
+        return r.json()
+
     def _post(self, path, data):
-        r = self.session.post(f"{self.url}{path}", data=json.dumps(data)); r.raise_for_status(); return r.json()
+        url = f"{self.url}{path}"
+        if self.debug:
+            click.echo(f"[DEBUG] POST {url}", err=True)
+            try: click.echo(f"[DEBUG] DATA {json.dumps(data)[:300]}", err=True)
+            except: pass
+        r = self.session.post(url, data=json.dumps(data))
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
+        r.raise_for_status()
+        return r.json()
+
     def _post_file(self, path, files, data=None):
         headers = dict(self.session.headers)
         headers.pop('Content-Type', None)
-        # Try with OCS-APIRequest header for Nextcloud
         headers['OCS-APIREQUEST'] = 'true'
-        r = self.session.post(f"{self.url}{path}", files=files, data=data, headers=headers)
+        url = f"{self.url}{path}"
+        if self.debug: click.echo(f"[DEBUG] POST {url}", err=True)
+        r = self.session.post(url, files=files, data=data, headers=headers)
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
         r.raise_for_status()
         return r.json()
+
     def _put(self, path, data):
-        r = self.session.put(f"{self.url}{path}", data=json.dumps(data)); r.raise_for_status(); return r.json()
+        url = f"{self.url}{path}"
+        if self.debug:
+            click.echo(f"[DEBUG] PUT {url}", err=True)
+            try: click.echo(f"[DEBUG] DATA {json.dumps(data)[:300]}", err=True)
+            except: pass
+        r = self.session.put(url, data=json.dumps(data))
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
+        r.raise_for_status()
+        return r.json()
     def list_boards(self): return self._get("/index.php/apps/deck/api/v1.0/boards")
     def get_board(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}")
     def list_stacks(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks")
@@ -196,9 +231,12 @@ def resolve_label_ids(client: DeckClient, board_id: int, tag_names: List[str]) -
 
 @click.group()
 @click.version_option(version="0.2.0", prog_name="ncdeck")
-def cli():
+@click.option('--debug', is_flag=True, hidden=True, help='Enable debug output')
+@click.pass_context
+def cli(ctx, debug):
     """Create Nextcloud Deck cards from the CLI."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['debug'] = debug
 
 
 @cli.group()
@@ -273,8 +311,10 @@ def account_add_cmd(instance_name, url):
     click.echo(f"\n{'='*50}\nConfiguration saved to {get_config_path()}\nInstance '{instance_name}' added with {len(boards_config)} board(s)\n{'='*50}")
 
 @account.command("list")
-def account_list_cmd():
+@click.pass_context
+def account_list_cmd(ctx):
     """List configured accounts/instances."""
+    debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         click.echo("No accounts configured. Run `ncdeck account add` to add one."); return
@@ -331,12 +371,14 @@ def show_config_cmd():
 @click.option("--labels","labels_board",metavar="BOARD_KEY")
 @click.option("--cards","cards_board",metavar="BOARD_KEY")
 @click.option("--stack",type=int)
-def list_cmd(instance,boards,stacks,labels_board,cards_board,stack):
+@click.pass_context
+def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
+    debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name=instance or cfg.get("default_instance")
     if not inst_name: raise click.ClickException("No instance specified")
     inst=cfg.get("instances",{}).get(inst_name)
     if not inst: raise click.ClickException(f"Instance '{inst_name}' not found")
-    client=DeckClient(inst)
+    client=DeckClient(inst, debug=debug)
     if boards:
         for b in client.list_boards(): 
             owner=(b.get("owner") or {}).get("uid"); click.echo(f"board_id={b['id']} title={b['title']} owner={owner}")
@@ -387,8 +429,9 @@ def list_cmd(instance,boards,stacks,labels_board,cards_board,stack):
 @click.option("-a","--assign",multiple=True)
 @click.option("--attach",type=click.Path(exists=True,path_type=Path),multiple=True,help="Attach file(s) to the created card")
 @click.option("-i","--instance")
-def create_cmd(board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+@click.pass_context
+def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
     ct=f"{prefix}{title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
     try:
@@ -412,7 +455,7 @@ def create_cmd(board_key,title,description,description_file,prefix,due_date,tag,
 @click.option("--stack",type=int)
 @click.option("--archive",is_flag=True)
 def done_cmd(board_key,card_id,instance,stack,archive):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
     try:
         if archive: client.archive_card(board["board_id"],card_id,archived=True); click.echo(f"Archived card #{card_id}"); return
         ds=stack if stack is not None else board.get("done_stack_id")
@@ -426,7 +469,7 @@ def done_cmd(board_key,card_id,instance,stack,archive):
 @click.argument("stack_id",type=int)
 @click.option("-i","--instance")
 def move_cmd(board_key,card_id,stack_id,instance):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
     try: client.move_card(board["board_id"],card_id,stack_id); click.echo(f"Moved card #{card_id} to stack {stack_id}")
     except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
 
@@ -437,7 +480,7 @@ def move_cmd(board_key,card_id,stack_id,instance):
 @click.option("-i","--instance")
 @click.option("--unassign",is_flag=True)
 def assign_cmd(board_key,card_id,user_id,instance,unassign):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
     try:
         if unassign: client.unassign_card(board["board_id"],card_id); click.echo(f"Unassigned card #{card_id}")
         else: client.assign_card(board["board_id"],card_id,user_id); click.echo(f"Assigned card #{card_id} to {user_id}")
@@ -451,7 +494,7 @@ def assign_cmd(board_key,card_id,user_id,instance,unassign):
 @click.option("-i","--instance")
 def attach_cmd(board_key,card_id,file_path,instance):
     """Attach a file to an existing card."""
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
     try:
         client.upload_attachment(board["board_id"],card_id,file_path)
         click.echo(f"Attached {file_path.name} to card #{card_id} in {inst_name}/{board_key}")
@@ -464,7 +507,7 @@ def attach_cmd(board_key,card_id,file_path,instance):
 @click.option("--stack",type=int)
 @click.option("--include-archived",is_flag=True)
 def search_cmd(board_key,query,instance,stack,include_archived):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
     cards=client.list_cards(board["board_id"],stack_id=stack)
     ql=query.lower(); res=[]
     for c in cards:
@@ -482,7 +525,7 @@ def search_cmd(board_key,query,instance,stack,include_archived):
 @click.argument("card_id",type=int)
 @click.option("-i","--instance")
 def show_cmd(board_key,card_id,instance):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
     card=client.get_card_full(board["board_id"],card_id)
     click.echo("="*60); click.echo(f"Card #{card.get('id')}: {card.get('title')}"); click.echo("="*60)
     click.echo(f"Board: {inst_name}/{board_key}")
