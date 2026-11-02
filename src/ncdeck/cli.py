@@ -431,7 +431,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
 @click.option("-i","--instance")
 @click.pass_context
 def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ct=f"{prefix}{title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
     try:
@@ -455,7 +455,7 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
 @click.option("--stack",type=int)
 @click.option("--archive",is_flag=True)
 def done_cmd(board_key,card_id,instance,stack,archive):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
         if archive: client.archive_card(board["board_id"],card_id,archived=True); click.echo(f"Archived card #{card_id}"); return
         ds=stack if stack is not None else board.get("done_stack_id")
@@ -469,7 +469,7 @@ def done_cmd(board_key,card_id,instance,stack,archive):
 @click.argument("stack_id",type=int)
 @click.option("-i","--instance")
 def move_cmd(board_key,card_id,stack_id,instance):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try: client.move_card(board["board_id"],card_id,stack_id); click.echo(f"Moved card #{card_id} to stack {stack_id}")
     except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
 
@@ -480,7 +480,7 @@ def move_cmd(board_key,card_id,stack_id,instance):
 @click.option("-i","--instance")
 @click.option("--unassign",is_flag=True)
 def assign_cmd(board_key,card_id,user_id,instance,unassign):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
         if unassign: client.unassign_card(board["board_id"],card_id); click.echo(f"Unassigned card #{card_id}")
         else: client.assign_card(board["board_id"],card_id,user_id); click.echo(f"Assigned card #{card_id} to {user_id}")
@@ -509,7 +509,7 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
 @click.option("--stack",type=int)
 @click.option("--include-archived",is_flag=True)
 def search_cmd(board_key,query,instance,stack,include_archived):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     cards=client.list_cards(board["board_id"],stack_id=stack)
     ql=query.lower(); res=[]
     for c in cards:
@@ -526,8 +526,10 @@ def search_cmd(board_key,query,instance,stack,include_archived):
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.option("-i","--instance")
-def show_cmd(board_key,card_id,instance):
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=ctx.obj.get("debug") if ctx.obj else False)
+@click.pass_context
+def show_cmd(ctx,board_key,card_id,instance):
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     card=client.get_card_full(board["board_id"],card_id)
     click.echo("="*60); click.echo(f"Card #{card.get('id')}: {card.get('title')}"); click.echo("="*60)
     click.echo(f"Board: {inst_name}/{board_key}")
