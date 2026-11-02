@@ -103,30 +103,29 @@ class DeckClient:
 
     def upload_attachment(self, board_id, card_id, file_path):
         p = Path(file_path)
-        # Try different endpoints for compatibility
+        card = None
         try:
-            with p.open('rb') as f:
-                files = {'file': (p.name, f)}
-                return self._post_file(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment", files)
-        except requests.HTTPError as e:
-            if e.response.status_code in [405, 404]:
-                try:
-                    with p.open('rb') as f:
-                        files = {'file': (p.name, f)}
-                        return self._post_file(f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/-1/cards/{card_id}/attachment", files)
-                except Exception:
-                    pass
-                try:
-                    with p.open('rb') as f:
-                        headers = dict(self.session.headers)
-                        headers.pop('Content-Type', None)
-                        files = {'file': (p.name, f)}
-                        r = self.session.post(f"{self.url}/index.php/apps/deck/api/v1.0/cards/{card_id}/attachment", files=files, headers=headers)
-                        r.raise_for_status()
-                        return r.json()
-                except Exception:
-                    pass
-            raise
+            card = self.get_card(board_id, card_id)
+        except Exception:
+            pass
+        stack_id = (card.get('stackId') if card else None) or -1
+        # Try different endpoints for compatibility
+        endpoints = [
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment",
+            f"/index.php/apps/deck/api/v1.1/boards/{board_id}/stacks/-1/cards/{card_id}/attachment",
+        ]
+        last_err = None
+        for ep in endpoints:
+            try:
+                with p.open('rb') as f:
+                    files = {'file': (p.name, f)}
+                    return self._post_file(ep, files)
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err if last_err else Exception("Failed to upload attachment")
 
 def get_mapping(cfg, instance_name: Optional[str], board_key: str):
     inst_name = instance_name or cfg.get("default_instance")
