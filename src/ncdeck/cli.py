@@ -150,10 +150,9 @@ class DeckClient:
         import subprocess
         if self.debug:
             click.echo(f"[DEBUG] GET card to find stack", err=True)
-        # Try with actual stack
         try:
             result = subprocess.run([
-                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
+                'curl', '-s', '-u', f"{self.auth.username}:{self.auth.password}",
                 '-X', 'POST',
                 '-H', 'OCS-APIREQUEST: true',
                 '-F', f'file=@{p.absolute()}',
@@ -161,42 +160,22 @@ class DeckClient:
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if self.debug:
                 click.echo(f"[DEBUG] curl tried stack {stack_id}, rc={result.returncode}", err=True)
-            if result.returncode == 0:
-                output = result.stdout.decode()
-                try:
-                    lines = output.strip().split('\n')
-                    if lines and lines[-1].isdigit():
-                        code = int(lines[-1])
-                        if code in [200, 201]:
-                            return "uploaded"
-                except:
-                    pass
-                if not output.strip():
-                    return "uploaded"
+            if result.returncode == 0 and not result.stdout.decode().strip().endswith('405'):
+                return "uploaded"
         except Exception:
             pass
         
-        # Try without stack
         try:
             result = subprocess.run([
-                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
+                'curl', '-s', '-u', f"{self.auth.username}:{self.auth.password}",
                 '-X', 'POST',
                 '-H', 'OCS-APIREQUEST: true',
                 '-F', f'file=@{p.absolute()}',
-                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/cards/{card_id}/attachment"
+                '-F', 'type=file',
+                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachment"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if self.debug:
-                click.echo(f"[DEBUG] curl tried without stack, rc={result.returncode}", err=True)
-            if result.returncode == 0:
-                output = result.stdout.decode()
-                try:
-                    lines = output.strip().split('\n')
-                    if lines and lines[-1].isdigit():
-                        code = int(lines[-1])
-                        if code in [200, 201]:
-                            return "uploaded"
-                except:
-                    pass
+            if result.returncode == 0 and '405' not in result.stdout.decode():
+                return "uploaded"
         except Exception:
             pass
         
