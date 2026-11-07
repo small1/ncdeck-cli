@@ -519,7 +519,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
                     if n: ns.append(n)
                 if ns: astr=f" @{','.join(ns)}"
             click.echo(f"  #{card_id} [{st}]{ar} {title}{astr}" if st else f"  #{card_id}{ar} {title}{astr}")
-            if du: click.echo(f"    Due: {du}")
+            if du: click.echo(f"    Due: {_fmt_ts(du)}")
         return
     if labels_board:
         inst_name_res,inst_res,board=get_mapping(cfg,instance,labels_board)
@@ -556,7 +556,7 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
     try:
         card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_norm,labels=lids if lids else None,assigned_users=list(assign) if assign else None)
         click.echo(f"Created card #{card['id']} '{card['title']}' in {inst_name}/{board_key}")
-        if due_norm: click.echo(f"  Due: {due_norm}")
+        if due_norm: click.echo(f"  Due: {_fmt_ts(due_norm)}")
         if tag: click.echo(f"  Tags: {', '.join(tag)}")
         if assign: click.echo(f"  Assigned: {', '.join(assign)}")
         for a in attach:
@@ -649,7 +649,7 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived):
     for c in res:
         cid=c.get('id'); t=c.get('title'); st=c.get('_stack_title') or c.get('stackTitle') or ''; ar=" [ARCHIVED]" if c.get('archived') else ""
         click.echo(f"  #{cid} [{st}]{ar} {t}" if st else f"  #{cid}{ar} {t}")
-        if c.get('duedate'): click.echo(f"    Due: {c['duedate']}")
+        if c.get('duedate'): click.echo(f"    Due: {_fmt_ts(c['duedate'])}")
 
 @cli.command("show")
 @click.argument("board_key")
@@ -663,7 +663,11 @@ def show_cmd(ctx,board_key,card_id,instance):
     click.echo("="*60); click.echo(f"Card #{card.get('id')}: {card.get('title')}"); click.echo("="*60)
     click.echo(f"Board: {inst_name}/{board_key}")
     st=card.get('_stack_title') or card.get('stackTitle'); click.echo(f"Stack: {st}" if st else f"Stack ID: {card.get('stackId')}")
-    click.echo(f"Status: {'Archived' if card.get('archived') else 'Active'}"); click.echo(f"Due Date: {card.get('duedate') or 'None'}")
+    done_ts = card.get('done')
+    status = 'Archived' if card.get('archived') else 'Active'
+    if done_ts: status += f" (Done: {_fmt_ts(done_ts)})"
+    click.echo(f"Status: {status}")
+    click.echo(f"Due Date: {_fmt_ts(card.get('duedate')) if card.get('duedate') else 'None'}")
     labels=card.get('labels') or []
     if labels:
         ns=[l.get('title') or l.get('name') for l in labels if l.get('title') or l.get('name')]
@@ -677,8 +681,29 @@ def show_cmd(ctx,board_key,card_id,instance):
             if n: ns.append(n)
         click.echo(f"Assignees: {', '.join(ns) if ns else 'None'}")
     else: click.echo("Assignees: None")
-    click.echo(f"Created: {card.get('createdAt')}\nLast Modified: {card.get('lastModified')}")
+    click.echo(f"Created: {_fmt_ts(card.get('createdAt'))}")
+    click.echo(f"Last Modified: {_fmt_ts(card.get('lastModified'))}")
     click.echo("="*60); click.echo("Description:"); click.echo(card.get('description') or "(empty)"); click.echo("="*60)
+
+def _fmt_ts(v):
+    if v is None or v == '': return 'None'
+    # Unix timestamp (seconds)
+    try:
+        if isinstance(v, (int, float)):
+            dt = datetime.fromtimestamp(float(v), tz=timezone.utc).astimezone()
+            return dt.strftime('%Y-%m-%d %H:%M')
+        if isinstance(v, str):
+            vs = v.strip()
+            if vs.isdigit():
+                dt = datetime.fromtimestamp(int(vs), tz=timezone.utc).astimezone()
+                return dt.strftime('%Y-%m-%d %H:%M')
+            dt = _parse_duedate(vs)
+            if dt:
+                return dt.astimezone().strftime('%Y-%m-%d %H:%M')
+            return vs
+    except Exception:
+        pass
+    return str(v)
 
 def _parse_duedate(s):
     if not s: return None
@@ -971,7 +996,7 @@ def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
             new_due = (it['due'] + timedelta(days=1)).isoformat()
             client.update_card_duedate(board['board_id'], it['id'], new_due)
             moved.append((it, new_due))
-            click.echo(f"Moved to next day #{it['id']} ({it['instance']}/{it['board']}) - {it['title']} -> {new_due}")
+            click.echo(f"Moved to next day #{it['id']} ({it['instance']}/{it['board']}) - {it['title']} -> {_fmt_ts(new_due)}")
         except Exception as e:
             move_errors.append((it, e))
             click.echo(click.style(f"  Error moving #{it['id']} ({it['instance']}/{it['board']}): {e}", fg='red'), err=True)
@@ -983,7 +1008,7 @@ def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
         click.echo(f"    - #{it['id']} {it['instance']}/{it['board']}: {it['title']}")
     click.echo(f"  Moved to next day: {len(moved)}")
     for it, nd in moved:
-        click.echo(f"    - #{it['id']} {it['instance']}/{it['board']}: {it['title']} (due {nd[:16].replace('T',' ')})")
+        click.echo(f"    - #{it['id']} {it['instance']}/{it['board']}: {it['title']} (due {_fmt_ts(nd)})")
     if move_errors:
         click.echo(f"  Move errors: {len(move_errors)}")
     click.echo()
