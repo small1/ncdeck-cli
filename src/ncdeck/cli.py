@@ -426,7 +426,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
 def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
-    ct=f"{prefix}{title}" if prefix else title; cd=read_description(description,description_file)
+    ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
     try:
         card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_date,labels=lids if lids else None,assigned_users=list(assign) if assign else None)
