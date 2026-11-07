@@ -488,8 +488,9 @@ def show_config_cmd():
 @click.option("--labels","labels_board",metavar="BOARD_KEY")
 @click.option("--cards","cards_board",metavar="BOARD_KEY")
 @click.option("--stack",type=int)
+@click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.pass_context
-def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
+def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards):
     """List configured boards/stacks/labels/cards or instance details."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name=instance or cfg.get("default_instance")
@@ -507,6 +508,9 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
     if cards_board:
         inst_name_res,inst_res,board=get_mapping(cfg,instance,cards_board)
         cards=client.list_cards(board["board_id"],stack_id=stack)
+        uname = inst_res.get('username')
+        if not all_cards and uname and _board_is_shared(client, board["board_id"], uname):
+            cards = [c for c in cards if _card_assigned_to(c, uname)]
         click.echo(f"Cards for {inst_name_res}/{cards_board}:")
         if not cards: click.echo("  (no cards found)"); return
         for card in cards:
@@ -641,12 +645,16 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
 @click.option("-i","--instance")
 @click.option("--stack",type=int)
 @click.option("--include-archived",is_flag=True)
+@click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.pass_context
-def search_cmd(ctx,board_key,query,instance,stack,include_archived):
+def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
     """Search cards by keyword in title or description."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     cards=client.list_cards(board["board_id"],stack_id=stack)
+    uname = inst.get('username')
+    if not all_cards and uname and _board_is_shared(client, board["board_id"], uname):
+        cards = [c for c in cards if _card_assigned_to(c, uname)]
     ql=query.lower(); res=[]
     for c in cards:
         if not include_archived and c.get('archived'): continue
@@ -797,7 +805,33 @@ def _short_desc(text, width=50):
     if len(t) <= width: return t
     return t[:width-1] + '…'
 
-def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, include_done=True):
+
+def _card_assigned_to(card, username):
+    if not username: return False
+    u = str(username).lower()
+    for a in (card.get('assignedUsers') or card.get('assignedusers') or []):
+        if not isinstance(a, dict): continue
+        p = a.get('participant') or {}
+        uid = (p.get('uid') or p.get('primaryKey') or a.get('uid') or a.get('primaryKey') or '')
+        if str(uid).lower() == u:
+            return True
+    return False
+
+def _board_is_shared(client, board_id, username):
+    try:
+        b = client.get_board(board_id)
+        owner = b.get('owner') or {}
+        owner_uid = owner.get('uid') or owner.get('primaryKey') or ''
+        if owner_uid and str(owner_uid).lower() != str(username).lower():
+            return True
+        # Also check if shared flag/count indicates sharing
+        if b.get('shared'):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, include_done=True, all_cards=False):
     items = []
     if all_instances:
         inst_items = list((cfg.get('instances') or {}).items())
@@ -817,9 +851,16 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                 cards = client.list_cards(bval['board_id'])
             except Exception:
                 continue
+            filter_username = None
+            if not all_cards:
+                uname = inst.get('username')
+                if uname and _board_is_shared(client, bval['board_id'], uname):
+                    filter_username = uname
             for c in cards:
                 if c.get('archived'): continue
                 if not include_done and c.get('done'):
+                    continue
+                if filter_username and not _card_assigned_to(c, filter_username):
                     continue
                 dd = _parse_duedate(c.get('duedate'))
                 if not dd: continue
@@ -842,16 +883,17 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
 @click.argument("period", default="today", required=False)
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
+@click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.option("--desc-width", default=50, show_default=True, help="Max width for short description")
 @click.pass_context
-def agenda_cmd(ctx, period, instance, all_instances, desc_width):
+def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
     """Show cards by due date (today, tomorrow, week, month)."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
     start, end, p = _agenda_range(period)
-    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug)
+    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, all_cards=all_cards)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     header = f"Agenda: {p}  ({start.strftime('%Y-%m-%d')} → {(end - timedelta(seconds=1)).strftime('%Y-%m-%d')})  [{scope}]"
     click.echo()
@@ -933,18 +975,19 @@ def _resolve_completed_refs(refs_text, items):
 @cli.command("completed")
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
+@click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.option("--archive", is_flag=True, help="Archive cards instead of moving to done stack")
 @click.option("--stack", type=int, help="Move to specific stack ID instead of done stack")
 @click.option("--desc-width", default=40, show_default=True, help="Max width for short description")
 @click.pass_context
-def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
+def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_width):
     """List today's agenda, mark selected cards as done, and move the rest to the next day."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
     start, end, p = _agenda_range('today')
-    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False)
+    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False, all_cards=all_cards)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     header = f"Today's agenda ({start.strftime('%Y-%m-%d')}) [{scope}]"
     click.echo()
