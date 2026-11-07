@@ -71,14 +71,24 @@ class DeckClient:
 
     def _put(self, path, data):
         url = f"{self.url}{path}"
+        # Clean payload for Deck API compatibility
+        payload = dict(data) if isinstance(data, dict) else data
+        if isinstance(payload, dict):
+            for k in ('ETag',):
+                payload.pop(k, None)
         if self.debug:
             click.echo(f"[DEBUG] PUT {url}", err=True)
-            try: click.echo(f"[DEBUG] DATA {json.dumps(data)[:300]}", err=True)
+            try: click.echo(f"[DEBUG] DATA {json.dumps(payload)[:300]}", err=True)
             except: pass
-        r = self.session.put(url, data=json.dumps(data))
-        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
-        r.raise_for_status()
-        return r.json()
+        r = self.session.put(url, data=json.dumps(payload))
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:200]}", err=True)
+        if not r.ok:
+            msg = r.text.strip()
+            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:300]}")
+        try:
+            return r.json()
+        except Exception:
+            return {}
     def list_boards(self): return self._get("/index.php/apps/deck/api/v1.0/boards")
     def get_board(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}")
     def list_stacks(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks")
