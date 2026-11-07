@@ -69,22 +69,30 @@ class DeckClient:
         r.raise_for_status()
         return r.json()
 
+    def _clean_card_payload(self, data):
+        if not isinstance(data, dict): return data
+        payload = dict(data)
+        # Remove read-only/computed fields that can cause 400 on some Deck versions
+        for k in ('ETag', 'lastModified', 'lastEditor', 'createdAt', 'deletedAt',
+                  'attachments', 'attachmentCount', 'commentsCount', 'commentsUnread',
+                  'owner', 'permissions', 'relatedStack', 'relatedBoard', 'overdue'):
+            payload.pop(k, None)
+        # Keep id if present? Some APIs ignore; safer to remove
+        payload.pop('id', None)
+        return payload
+
     def _put(self, path, data):
         url = f"{self.url}{path}"
-        # Clean payload for Deck API compatibility
-        payload = dict(data) if isinstance(data, dict) else data
-        if isinstance(payload, dict):
-            for k in ('ETag',):
-                payload.pop(k, None)
+        payload = self._clean_card_payload(data)
         if self.debug:
             click.echo(f"[DEBUG] PUT {url}", err=True)
-            try: click.echo(f"[DEBUG] DATA {json.dumps(payload)[:300]}", err=True)
+            try: click.echo(f"[DEBUG] DATA {json.dumps(payload)[:800]}", err=True)
             except: pass
         r = self.session.put(url, data=json.dumps(payload))
-        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:200]}", err=True)
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:500]}", err=True)
         if not r.ok:
             msg = r.text.strip()
-            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:300]}")
+            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:500]}")
         try:
             return r.json()
         except Exception:
