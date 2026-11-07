@@ -259,8 +259,17 @@ class DeckClient:
         payload={"title":title,"description":description,"type":"plain","order":999}
         if duedate: payload["duedate"]=duedate
         if labels: payload["labels"]=[{"id":int(l)} for l in labels]
-        if assigned_users: payload["assignedUsers"]=[{"participant":{"primaryKey":u}} for u in assigned_users]
-        return self._post(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards", payload)
+        card = self._post(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards", payload)
+        if assigned_users:
+            card_id = card.get('id')
+            card_stack = card.get('stackId') or stack_id
+            for u in assigned_users:
+                try:
+                    self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card_stack}/cards/{card_id}/assignUser", {"userId": u})
+                except Exception as e:
+                    if self.debug: click.echo(f"[DEBUG] assignUser failed for {u}: {e}", err=True)
+                    raise
+        return card
 
     def upload_attachment(self, board_id, card_id, file_path):
         p = Path(file_path)
