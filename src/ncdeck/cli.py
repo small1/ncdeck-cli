@@ -789,7 +789,7 @@ def _short_desc(text, width=50):
     if len(t) <= width: return t
     return t[:width-1] + '…'
 
-def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False):
+def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, include_done=True):
     items = []
     if all_instances:
         inst_items = list((cfg.get('instances') or {}).items())
@@ -811,6 +811,8 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False):
                 continue
             for c in cards:
                 if c.get('archived'): continue
+                if not include_done and c.get('done'):
+                    continue
                 dd = _parse_duedate(c.get('duedate'))
                 if not dd: continue
                 ddl = dd.astimezone()
@@ -934,7 +936,7 @@ def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
     start, end, p = _agenda_range('today')
-    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug)
+    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     header = f"Today's agenda ({start.strftime('%Y-%m-%d')}) [{scope}]"
     click.echo()
