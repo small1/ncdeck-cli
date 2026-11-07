@@ -75,10 +75,22 @@ class DeckClient:
         # Remove read-only/computed fields that can cause 400 on some Deck versions
         for k in ('ETag', 'lastModified', 'lastEditor', 'createdAt', 'deletedAt',
                   'attachments', 'attachmentCount', 'commentsCount', 'commentsUnread',
-                  'owner', 'permissions', 'relatedStack', 'relatedBoard', 'overdue'):
+                  'owner', 'permissions', 'relatedStack', 'relatedBoard', 'overdue',
+                  'id'):
             payload.pop(k, None)
-        # Keep id if present? Some APIs ignore; safer to remove
-        payload.pop('id', None)
+        # Remove null optional fields that some Deck versions reject
+        for k in ('done', 'startdate', 'color', 'referenceData'):
+            if payload.get(k) is None:
+                payload.pop(k, None)
+        # Normalize duedate to UTC Z format if present
+        dd = payload.get('duedate')
+        if isinstance(dd, str) and dd:
+            try:
+                dt = _parse_duedate(dd)
+                if dt:
+                    payload['duedate'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            except Exception:
+                pass
         return payload
 
     def _put(self, path, data):
