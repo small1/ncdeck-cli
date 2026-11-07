@@ -1195,5 +1195,82 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
         ui_kv("Move errors", str(len(move_errors)), 'red')
     click.echo()
 
+
+
+@cli.command("archive")
+@click.argument("board_key")
+@click.argument("before_date")
+@click.option("-i", "--instance")
+@click.option("--all-done", "all_done", is_flag=True, help="Archive all cards marked as done older than BEFORE_DATE (ignore done stack and assignee)")
+@click.option("-y", "--yes", is_flag=True, help="Do not ask for confirmation")
+@click.pass_context
+def archive_cmd(ctx, board_key, before_date, instance, all_done, yes):
+    """Archive done cards older than BEFORE_DATE. By default: in done stack, marked done, assigned to current user. With --all-done: all cards marked done (any stack/assignee)."""
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg = load_config(); inst_name, inst, board = get_mapping(cfg, instance, board_key); client = DeckClient(inst, debug=debug)
+    ic = _inst_color(inst)
+    cutoff = _parse_duedate(before_date)
+    if not cutoff:
+        # try date-only
+        try:
+            cutoff = datetime.strptime(str(before_date).strip(), "%Y-%m-%d").replace(tzinfo=datetime.now().astimezone().tzinfo)
+        except Exception:
+            raise click.ClickException(f"Could not parse date: {before_date}")
+    cutoff = cutoff.astimezone()
+    username = inst.get('username')
+    if all_done:
+        cards = client.list_cards(board['board_id'])
+        ui_info(f"Scanning all stacks for done cards older than {_fmt_ts(cutoff)} in {inst_name}/{board_key}...", ic)
+    else:
+        if not username:
+            raise click.ClickException("Instance has no username configured (required to filter by current user; use --all-done to ignore)")
+        ds = board.get('done_stack_id')
+        if ds is None:
+            raise click.ClickException("No done_stack_id configured for this board (use --all-done to scan all done cards)")
+        cards = client.list_cards(board['board_id'], stack_id=ds)
+        ui_info(f"Scanning done stack for your done cards older than {_fmt_ts(cutoff)} in {inst_name}/{board_key}...", ic)
+    targets = []
+    for c in cards:
+        if c.get('archived'):
+            continue
+        done_ts = c.get('done')
+        if not done_ts:
+            continue
+        dt = _parse_duedate(done_ts) or _parse_duedate(c.get('lastModified')) or _parse_duedate(c.get('createdAt'))
+        if not dt:
+            continue
+        dtl = dt.astimezone()
+        if not (dtl < cutoff):
+            continue
+        if not all_done:
+            if not username or not _card_assigned_to(c, username):
+                continue
+        targets.append((c, dtl))
+    targets.sort(key=lambda x: (x[1], x[0].get('id', 0)))
+    if not targets:
+        ui_dim("No matching cards to archive.")
+        return
+    ui_header(f"Cards to archive ({len(targets)}) - {inst_name}/{board_key}", ic)
+    for c, dtl in targets:
+        cid = c.get('id'); title = c.get('title') or '(untitled)'; st = c.get('_stack_title') or c.get('stackTitle') or ''
+        click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)} {_st(f'[{st}]', fg=ic) if st else ''} {title} {_st(f'(done {_fmt_ts(dtl)})', dim=True)}")
+    if not yes:
+        if not click.confirm(f"Archive {len(targets)} card(s)?", default=False):
+            ui_warn("Cancelled")
+            return
+    ok = 0; errs = 0
+    for c, dtl in targets:
+        cid = c.get('id')
+        try:
+            client.archive_card(board['board_id'], cid, archived=True)
+            ok += 1
+            ui_ok(f"Archived {_st('#'+str(cid), fg=ic, bold=True)} {c.get('title') or ''}")
+        except Exception as e:
+            errs += 1
+            ui_err(f"Failed to archive #{cid}: {e}")
+    ui_header("Summary", ic)
+    ui_kv("Archived", str(ok), ic)
+    if errs: ui_kv("Errors", str(errs), 'red')
+
 if __name__ == "__main__":
     cli()
