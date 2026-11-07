@@ -557,18 +557,40 @@ def show_cmd(ctx,board_key,card_id,instance):
 def _parse_duedate(s):
     if not s: return None
     s = str(s).strip()
+    # Date-only formats get default time 17:00 local
+    local_tz = datetime.now().astimezone().tzinfo
     try:
         # Handle Z suffix
-        if s.endswith('Z'): s = s[:-1] + '+00:00'
-        dt = datetime.fromisoformat(s)
+        if s.endswith('Z'):
+            s2 = s[:-1] + '+00:00'
+        else:
+            s2 = s
+        dt = datetime.fromisoformat(s2)
+        # If it's exactly midnight and input looks like date-only, apply default 17:00
+        if len(s) <= 10 and 'T' not in s and ' ' not in s:
+            dt = dt.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=local_tz)
+            return dt
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        # If parsed as date-only via fromisoformat (YYYY-MM-DD)
+        if len(s) == 10:
+            return dt.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=local_tz)
         return dt
     except Exception:
         pass
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+    # Date-only
+    for fmt in ("%Y-%m-%d",):
         try:
-            return datetime.strptime(s[:19], fmt).replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(s[:10], fmt)
+            return dt.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=local_tz)
+        except Exception:
+            pass
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(s[:16] if len(fmt) < 17 else s[:19], fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=local_tz)
+            return dt
         except Exception:
             pass
     return None
