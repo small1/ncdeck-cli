@@ -176,34 +176,12 @@ class DeckClient:
 
     def reorder_card(self, board_id, card_id, target_stack_id, order=0):
         # Use OCS reorder endpoint (matches Deck web UI behavior) with full card payload
-        try:
-            card = self.get_card(board_id, card_id)
-            payload = dict(card)
-            payload['stackId'] = int(target_stack_id)
-            payload['order'] = int(order)
-            payload['boardId'] = int(board_id)
-            # Try OCS endpoint first
-            return self._put_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/reorder", payload)
-        except Exception as e:
-            if self.debug:
-                click.echo(f"[DEBUG] OCS reorder failed: {e}, trying legacy endpoint", err=True)
-        # Fallback to legacy endpoint
         card = self.get_card(board_id, card_id)
-        cur_stack = card.get('stackId')
-        payload = {"order": int(order), "stackId": int(target_stack_id)}
-        result = self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{cur_stack}/cards/{card_id}/reorder", payload)
-        try:
-            res_stack = result.get('stackId') if isinstance(result, dict) else None
-            if res_stack is not None and int(res_stack) != int(target_stack_id):
-                if self.debug:
-                    click.echo(f"[DEBUG] Reorder did not move card (stack still {res_stack}), trying update fallback", err=True)
-                card2 = self.get_card(board_id, card_id)
-                up = self._card_update_payload(card2)
-                up["stackId"] = int(target_stack_id)
-                return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{cur_stack}/cards/{card_id}", up)
-        except Exception:
-            pass
-        return result
+        payload = dict(card)
+        payload['stackId'] = int(target_stack_id)
+        payload['order'] = int(order)
+        payload['boardId'] = int(board_id)
+        return self._put_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/reorder", payload)
 
     def move_card(self, board_id, card_id, stack_id):
         return self.reorder_card(board_id, card_id, stack_id, order=0)
