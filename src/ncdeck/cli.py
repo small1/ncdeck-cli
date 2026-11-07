@@ -555,12 +555,13 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
     ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
     due_norm = _normalize_create_duedate(due_date) if due_date else None
+    assigned_users = list(assign) if assign else ([inst['username']] if inst.get('username') else None)
     try:
-        card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_norm,labels=lids if lids else None,assigned_users=list(assign) if assign else None)
+        card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_norm,labels=lids if lids else None,assigned_users=assigned_users)
         click.echo(f"Created card #{card['id']} '{card['title']}' in {inst_name}/{board_key}")
         if due_norm: click.echo(f"  Due: {_fmt_ts(due_norm)}")
         if tag: click.echo(f"  Tags: {', '.join(tag)}")
-        if assign: click.echo(f"  Assigned: {', '.join(assign)}")
+        if assigned_users: click.echo(f"  Assigned: {', '.join(assigned_users)}")
         for a in attach:
             try:
                 client.upload_attachment(board["board_id"], card['id'], a)
