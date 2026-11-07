@@ -2,6 +2,7 @@
 import os, sys, json, time, webbrowser
 from pathlib import Path
 from typing import Optional, List
+from datetime import datetime, timedelta, timezone
 import click, requests, yaml
 from requests.auth import HTTPBasicAuth
 
@@ -552,6 +553,124 @@ def show_cmd(ctx,board_key,card_id,instance):
     else: click.echo("Assignees: None")
     click.echo(f"Created: {card.get('createdAt')}\nLast Modified: {card.get('lastModified')}")
     click.echo("="*60); click.echo("Description:"); click.echo(card.get('description') or "(empty)"); click.echo("="*60)
+
+def _parse_duedate(s):
+    if not s: return None
+    s = str(s).strip()
+    try:
+        # Handle Z suffix
+        if s.endswith('Z'): s = s[:-1] + '+00:00'
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s[:19], fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    return None
+
+def _agenda_range(period):
+    now = datetime.now().astimezone()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    p = (period or 'today').lower()
+    if p == 'today':
+        end = start + timedelta(days=1)
+    elif p == 'tomorrow':
+        start = start + timedelta(days=1)
+        end = start + timedelta(days=1)
+    elif p == 'week':
+        end = start + timedelta(days=7)
+    elif p == 'month':
+        end = start + timedelta(days=30)
+    else:
+        raise click.ClickException(f"Unknown period '{period}'. Use: today, tomorrow, week, month")
+    return start, end, p
+
+def _short_desc(text, width=50):
+    if not text: return ''
+    t = ' '.join(str(text).replace('\r',' ').replace('\n',' ').split())
+    if len(t) <= width: return t
+    return t[:width-1] + '…'
+
+def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False):
+    items = []
+    if all_instances:
+        inst_items = list((cfg.get('instances') or {}).items())
+    else:
+        iname = instance_name or cfg.get('default_instance')
+        if not iname: raise click.ClickException("No instance specified and no default_instance in config")
+        inst = (cfg.get('instances') or {}).get(iname)
+        if not inst: raise click.ClickException(f"Instance '{iname}' not found")
+        inst_items = [(iname, inst)]
+    for iname, inst in inst_items:
+        try:
+            client = DeckClient(inst, debug=debug)
+        except Exception:
+            continue
+        for bkey, bval in (inst.get('boards') or {}).items():
+            try:
+                cards = client.list_cards(bval['board_id'])
+            except Exception:
+                continue
+            for c in cards:
+                if c.get('archived'): continue
+                dd = _parse_duedate(c.get('duedate'))
+                if not dd: continue
+                ddl = dd.astimezone()
+                if start <= ddl < end:
+                    st = c.get('_stack_title') or c.get('stackTitle') or f"stack {c.get('stackId','?')}"
+                    items.append({
+                        'due': ddl,
+                        'title': c.get('title') or '(untitled)',
+                        'desc': c.get('description') or '',
+                        'instance': iname,
+                        'board': bkey,
+                        'stack': st,
+                        'id': c.get('id'),
+                    })
+    items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
+    return items
+
+@cli.command("agenda")
+@click.argument("period", default="today", required=False)
+@click.option("-i", "--instance")
+@click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
+@click.option("--desc-width", default=50, show_default=True, help="Max width for short description")
+@click.pass_context
+def agenda_cmd(ctx, period, instance, all_instances, desc_width):
+    """Show cards by due date (today, tomorrow, week, month)."""
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg = load_config()
+    if not isinstance(cfg, dict) or not cfg.get('instances'):
+        raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
+    start, end, p = _agenda_range(period)
+    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug)
+    scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
+    header = f"Agenda: {p}  ({start.strftime('%Y-%m-%d')} → {(end - timedelta(seconds=1)).strftime('%Y-%m-%d')})  [{scope}]"
+    click.echo()
+    click.echo(click.style(header, bold=True))
+    click.echo(click.style('─' * min(max(len(header), 72), 100), fg='blue'))
+    if not items:
+        click.echo(click.style("  No cards with due dates in this period.", dim=True))
+        click.echo()
+        return
+    for it in items:
+        due_s = it['due'].strftime('%a %Y-%m-%d %H:%M')
+        title = it['title']
+        desc = _short_desc(it['desc'], desc_width)
+        loc = f"{it['instance']} / {it['board']} / {it['stack']}"
+        click.echo(click.style(f"  ● {title}", bold=True) + click.style(f"  (#{it['id']})", dim=True))
+        if desc:
+            click.echo(f"    {click.style('Desc:', fg='cyan')}   {desc}")
+        click.echo(f"    {click.style('Due:', fg='yellow')}    {due_s}")
+        click.echo(f"    {click.style('Where:', fg='green')}  {loc}")
+        click.echo()
+    click.echo(click.style(f"Total: {len(items)} card(s)", dim=True))
+    click.echo()
 
 if __name__ == "__main__":
     cli()
