@@ -490,6 +490,7 @@ def show_config_cmd():
 @click.option("--stack",type=int)
 @click.pass_context
 def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
+    """List configured boards/stacks/labels/cards or instance details."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name=instance or cfg.get("default_instance")
     if not inst_name: raise click.ClickException("No instance specified")
@@ -548,6 +549,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
 @click.option("-i","--instance")
 @click.pass_context
 def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
+    """Create a new card on a board."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
@@ -575,6 +577,7 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
 @click.option("--archive",is_flag=True)
 @click.pass_context
 def done_cmd(ctx,board_key,card_id,instance,stack,archive):
+    """Mark a card as done and move it to the done stack (or archive it)."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
@@ -593,6 +596,7 @@ def done_cmd(ctx,board_key,card_id,instance,stack,archive):
 @click.option("-i","--instance")
 @click.pass_context
 def move_cmd(ctx,board_key,card_id,stack_id,instance):
+    """Move a card to a different stack."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try: client.move_card(board["board_id"],card_id,stack_id); click.echo(f"Moved card #{card_id} to stack {stack_id}")
@@ -606,6 +610,7 @@ def move_cmd(ctx,board_key,card_id,stack_id,instance):
 @click.option("--unassign",is_flag=True)
 @click.pass_context
 def assign_cmd(ctx,board_key,card_id,user_id,instance,unassign):
+    """Assign or unassign a user to/from a card."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
@@ -637,6 +642,7 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
 @click.option("--include-archived",is_flag=True)
 @click.pass_context
 def search_cmd(ctx,board_key,query,instance,stack,include_archived):
+    """Search cards by keyword in title or description."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     cards=client.list_cards(board["board_id"],stack_id=stack)
@@ -657,6 +663,7 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived):
 @click.option("-i","--instance")
 @click.pass_context
 def show_cmd(ctx,board_key,card_id,instance):
+    """Show full details for a card."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     card=client.get_card_full(board["board_id"],card_id)
