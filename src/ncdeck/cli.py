@@ -1053,7 +1053,7 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
     ui_dim(f"Total: {len(items)} card(s)")
     click.echo()
 
-def _resolve_completed_refs(refs_text, items):
+def _resolve_completed_refs(refs_text, items, context="today's/overdue agenda"):
     # Build lookups
     by_inst_id = {}
     by_inst_board_id = {}
@@ -1085,7 +1085,7 @@ def _resolve_completed_refs(refs_text, items):
             continue
         if '/' in r and ':' in r.split('/')[-1]:
             # try instance/board:cardid
-            errors.append(f"Not found in today's agenda: {r}"); continue
+            errors.append(f"Not found in {context}: {r}"); continue
         if ':' in rn:
             parts = rn.split(':', 1)
             if len(parts) == 2:
@@ -1100,7 +1100,7 @@ def _resolve_completed_refs(refs_text, items):
             if len(matches) == 1: resolved.append(matches[0])
             else: errors.append(f"Ambiguous card id '{r}'; use instance:cardid or instance/board:cardid")
             continue
-        errors.append(f"Not found in today's agenda: {r}")
+        errors.append(f"Not found in {context}: {r}")
     # dedupe by (instance, board, id)
     seen = set(); out = []
     for it in resolved:
@@ -1117,31 +1117,48 @@ def _resolve_completed_refs(refs_text, items):
 @click.option("--desc-width", default=40, show_default=True, help="Max width for short description")
 @click.pass_context
 def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_width):
-    """List today's agenda, mark selected cards as done, and move the rest to the next day."""
+    """List today's and overdue cards, mark selected cards as done, and move the rest to the next day."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
     start, end, p = _agenda_range('today')
-    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False, all_cards=all_cards)
+    today_items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False, all_cards=all_cards)
+    overdue_start = start - timedelta(days=3650)
+    overdue_items = _gather_agenda(cfg, instance, all_instances, overdue_start, start, debug=debug, include_done=False, all_cards=all_cards)
+    for it in overdue_items:
+        it['overdue'] = True
+    for it in today_items:
+        it['overdue'] = False
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     hc = 'cyan' if all_instances else _inst_color(cfg.get('instances',{}).get(scope))
-    header = f"Today's agenda ({start.strftime('%Y-%m-%d')}) [{scope}]"
-    ui_header(header, hc)
-    if not items:
-        ui_dim("  No cards with due dates today.")
-        click.echo()
-        return
-    for it in items:
+    ui_header(f"Today & overdue ({start.strftime('%Y-%m-%d')}) [{scope}]", hc)
+
+    def _print_item(it):
         ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
-        due_s = it['due'].strftime('%H:%M')
+        due_s = it['due'].strftime('%Y-%m-%d %H:%M') if it.get('overdue') else it['due'].strftime('%H:%M')
         desc = _short_desc(it['desc'], desc_width)
         ref = f"{it['instance']}/{it['board']}#{it['id']}"
-        click.echo(f"  {_st('●', fg=ic)} {_st(it['title'], bold=True)} {_st(f'[{ref}]', fg=ic)}")
+        marker = _st('OVERDUE ', fg='red', bold=True) if it.get('overdue') else ''
+        click.echo(f"  {_st('●', fg=ic)} {marker}{_st(it['title'], bold=True)} {_st(f'[{ref}]', fg=ic)}")
         if desc:
             click.echo(f"    {_st(desc, dim=False)}")
         click.echo(f"    {_st('Due:', fg=ic)} {due_s}  {_st('Where:', fg=ic)} {_st(f"{it['instance']}/{it['board']} / {it['stack']}", fg=ic)}")
         click.echo()
+
+    if overdue_items:
+        click.echo(_st(f"  Overdue ({len(overdue_items)})", fg='red', bold=True))
+        for it in overdue_items:
+            _print_item(it)
+    if today_items:
+        click.echo(_st(f"  Today ({len(today_items)})", fg=hc, bold=True))
+        for it in today_items:
+            _print_item(it)
+    items = overdue_items + today_items
+    if not items:
+        ui_dim("  No due/overdue cards to review.")
+        click.echo()
+        return
     click.echo(_st("Enter completed cards as instance:cardid or instance/board:cardid (comma/space separated).", dim=True))
     click.echo(_st("Example: mync:20  or  mync/personal:20", dim=True))
     refs = click.prompt("Completed", default="", show_default=False)
@@ -1176,6 +1193,7 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
             ui_err(f"Error completing #{card_id} ({inst_name}/{board_key}): {e}")
     moved = []
     move_errors = []
+    tomorrow_start = start + timedelta(days=1)
     for it in items:
         k = (it['instance'], it['board'], it['id'])
         if k in completed_keys:
@@ -1184,7 +1202,11 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
         try:
             _, inst, board = get_mapping(cfg, it['instance'], it['board'])
             client = DeckClient(inst, debug=debug)
-            new_due = (it['due'] + timedelta(days=1)).isoformat()
+            if it.get('overdue') or it['due'] < tomorrow_start:
+                nd = tomorrow_start.replace(hour=it['due'].hour, minute=it['due'].minute, second=0, microsecond=0)
+            else:
+                nd = it['due'] + timedelta(days=1)
+            new_due = nd.isoformat()
             client.update_card_duedate(board['board_id'], it['id'], new_due)
             moved.append((it, new_due))
             ui_ok(f"Moved to next day {_st('#'+str(it['id']), fg=ic, bold=True)} ({_st(f"{it['instance']}/{it['board']}", fg=ic)}) - {it['title']} → {_fmt_ts(new_due)}")
@@ -1203,83 +1225,6 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
     if move_errors:
         ui_kv("Move errors", str(len(move_errors)), 'red')
     click.echo()
-
-
-
-@cli.command("archive")
-@click.argument("board_key")
-@click.argument("before_date")
-@click.option("-i", "--instance")
-@click.option("--all-done", "all_done", is_flag=True, help="Archive all cards marked as done older than BEFORE_DATE (ignore done stack and assignee)")
-@click.option("-y", "--yes", is_flag=True, help="Do not ask for confirmation")
-@click.pass_context
-def archive_cmd(ctx, board_key, before_date, instance, all_done, yes):
-    """Archive done cards older than BEFORE_DATE. By default: in done stack, marked done, assigned to current user. With --all-done: all cards marked done (any stack/assignee)."""
-    debug = ctx.obj.get('debug') if ctx.obj else False
-    cfg = load_config(); inst_name, inst, board = get_mapping(cfg, instance, board_key); client = DeckClient(inst, debug=debug)
-    ic = _inst_color(inst)
-    cutoff = _parse_duedate(before_date)
-    if not cutoff:
-        # try date-only
-        try:
-            cutoff = datetime.strptime(str(before_date).strip(), "%Y-%m-%d").replace(tzinfo=datetime.now().astimezone().tzinfo)
-        except Exception:
-            raise click.ClickException(f"Could not parse date: {before_date}")
-    cutoff = cutoff.astimezone()
-    username = inst.get('username')
-    if all_done:
-        cards = client.list_cards(board['board_id'])
-        ui_info(f"Scanning all stacks for done cards older than {_fmt_ts(cutoff)} in {inst_name}/{board_key}...", ic)
-    else:
-        if not username:
-            raise click.ClickException("Instance has no username configured (required to filter by current user; use --all-done to ignore)")
-        ds = board.get('done_stack_id')
-        if ds is None:
-            raise click.ClickException("No done_stack_id configured for this board (use --all-done to scan all done cards)")
-        cards = client.list_cards(board['board_id'], stack_id=ds)
-        ui_info(f"Scanning done stack for your done cards older than {_fmt_ts(cutoff)} in {inst_name}/{board_key}...", ic)
-    targets = []
-    for c in cards:
-        if c.get('archived'):
-            continue
-        done_ts = c.get('done')
-        if not done_ts:
-            continue
-        dt = _parse_duedate(done_ts) or _parse_duedate(c.get('lastModified')) or _parse_duedate(c.get('createdAt'))
-        if not dt:
-            continue
-        dtl = dt.astimezone()
-        if not (dtl < cutoff):
-            continue
-        if not all_done:
-            if not username or not _card_assigned_to(c, username):
-                continue
-        targets.append((c, dtl))
-    targets.sort(key=lambda x: (x[1], x[0].get('id', 0)))
-    if not targets:
-        ui_dim("No matching cards to archive.")
-        return
-    ui_header(f"Cards to archive ({len(targets)}) - {inst_name}/{board_key}", ic)
-    for c, dtl in targets:
-        cid = c.get('id'); title = c.get('title') or '(untitled)'; st = c.get('_stack_title') or c.get('stackTitle') or ''
-        click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)} {_st(f'[{st}]', fg=ic) if st else ''} {title} {_st(f'(done {_fmt_ts(dtl)})', dim=True)}")
-    if not yes:
-        if not click.confirm(f"Archive {len(targets)} card(s)?", default=False):
-            ui_warn("Cancelled")
-            return
-    ok = 0; errs = 0
-    for c, dtl in targets:
-        cid = c.get('id')
-        try:
-            client.archive_card(board['board_id'], cid, archived=True)
-            ok += 1
-            ui_ok(f"Archived {_st('#'+str(cid), fg=ic, bold=True)} {c.get('title') or ''}")
-        except Exception as e:
-            errs += 1
-            ui_err(f"Failed to archive #{cid}: {e}")
-    ui_header("Summary", ic)
-    ui_kv("Archived", str(ok), ic)
-    if errs: ui_kv("Errors", str(errs), 'red')
 
 if __name__ == "__main__":
     cli()
