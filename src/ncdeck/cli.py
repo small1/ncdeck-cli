@@ -418,7 +418,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
 @click.option("-d","--description",default="")
 @click.option("-f","--description-file",type=click.Path(exists=True,path_type=Path))
 @click.option("-p","--prefix",default="")
-@click.option("--due-date")
+@click.option("--due-date", help="Due date/time (e.g. 2026-06-10 13:00, 2026-06-10, today, tomorrow; date-only defaults to 17:00)")
 @click.option("-t","--tag",multiple=True)
 @click.option("-a","--assign",multiple=True)
 @click.option("--attach",type=click.Path(exists=True,path_type=Path),multiple=True,help="Attach file(s) to the created card")
@@ -429,10 +429,11 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
+    due_norm = _normalize_create_duedate(due_date) if due_date else None
     try:
-        card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_date,labels=lids if lids else None,assigned_users=list(assign) if assign else None)
+        card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_norm,labels=lids if lids else None,assigned_users=list(assign) if assign else None)
         click.echo(f"Created card #{card['id']} '{card['title']}' in {inst_name}/{board_key}")
-        if due_date: click.echo(f"  Due: {due_date}")
+        if due_norm: click.echo(f"  Due: {due_norm}")
         if tag: click.echo(f"  Tags: {', '.join(tag)}")
         if assign: click.echo(f"  Assigned: {', '.join(assign)}")
         for a in attach:
@@ -557,43 +558,63 @@ def show_cmd(ctx,board_key,card_id,instance):
 def _parse_duedate(s):
     if not s: return None
     s = str(s).strip()
-    # Date-only formats get default time 17:00 local
-    local_tz = datetime.now().astimezone().tzinfo
     try:
         # Handle Z suffix
         if s.endswith('Z'):
-            s2 = s[:-1] + '+00:00'
-        else:
-            s2 = s
-        dt = datetime.fromisoformat(s2)
-        # If it's exactly midnight and input looks like date-only, apply default 17:00
-        if len(s) <= 10 and 'T' not in s and ' ' not in s:
-            dt = dt.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=local_tz)
-            return dt
+            s = s[:-1] + '+00:00'
+        dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        # If parsed as date-only via fromisoformat (YYYY-MM-DD)
-        if len(s) == 10:
-            return dt.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=local_tz)
         return dt
     except Exception:
         pass
-    # Date-only
-    for fmt in ("%Y-%m-%d",):
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
-            dt = datetime.strptime(s[:10], fmt)
-            return dt.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=local_tz)
-        except Exception:
-            pass
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"):
-        try:
-            dt = datetime.strptime(s[:16] if len(fmt) < 17 else s[:19], fmt)
+            sl = s[:19] if 'T' in fmt or ' ' in fmt and '%H' in fmt else s[:10]
+            dt = datetime.strptime(sl, fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=local_tz)
+                dt = dt.replace(tzinfo=timezone.utc)
             return dt
         except Exception:
             pass
     return None
+
+def _normalize_create_duedate(s):
+    if not s: return None
+    raw = str(s).strip()
+    low = raw.lower()
+    now = datetime.now().astimezone()
+    local_tz = now.tzinfo
+    if low == 'today':
+        dt = now.replace(hour=17, minute=0, second=0, microsecond=0)
+        return dt.isoformat()
+    if low == 'tomorrow':
+        dt = (now + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+        return dt.isoformat()
+    # If date-only, default to 17:00 local
+    if len(raw) == 10 and raw[4] == '-' and raw[7] == '-':
+        try:
+            dt = datetime.strptime(raw, "%Y-%m-%d").replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=local_tz)
+            return dt.isoformat()
+        except Exception:
+            pass
+    # Try parsing datetime-like inputs; if no time component, add 17:00
+    try:
+        s2 = raw[:-1] + '+00:00' if raw.endswith('Z') else raw
+        dt = datetime.fromisoformat(s2)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=local_tz)
+        return dt.isoformat()
+    except Exception:
+        pass
+    for fmt, has_time in (("%Y-%m-%d %H:%M", True), ("%Y-%m-%dT%H:%M", True), ("%Y-%m-%d %H:%M:%S", True), ("%Y-%m-%dT%H:%M:%S", True)):
+        try:
+            dt = datetime.strptime(raw[:16] if fmt.endswith('%M') else raw[:19], fmt).replace(tzinfo=local_tz)
+            return dt.isoformat()
+        except Exception:
+            pass
+    # Fallback: return as-is
+    return raw
 
 def _agenda_range(period):
     now = datetime.now().astimezone()
