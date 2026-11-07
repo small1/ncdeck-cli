@@ -715,5 +715,123 @@ def agenda_cmd(ctx, period, instance, all_instances, desc_width):
     click.echo(click.style(f"Total: {len(items)} card(s)", dim=True))
     click.echo()
 
+def _resolve_completed_refs(refs_text, items):
+    # Build lookups
+    by_inst_id = {}
+    by_inst_board_id = {}
+    by_id = {}
+    for it in items:
+        key = f"{it['instance']}:{it['id']}"
+        by_inst_id.setdefault(key, []).append(it)
+        key2 = f"{it['instance']}/{it['board']}:{it['id']}"
+        key3 = f"{it['instance']}/{it['board']}#{it['id']}"
+        by_inst_board_id[key2] = it
+        by_inst_board_id[key3] = it
+        by_id.setdefault(str(it['id']), []).append(it)
+    raw = refs_text.replace(',', ' ').split()
+    resolved = []
+    errors = []
+    for r in raw:
+        r = r.strip()
+        if not r: continue
+        if r in by_inst_board_id:
+            resolved.append(by_inst_board_id[r]); continue
+        # normalize # to :
+        rn = r.replace('#', ':')
+        if rn in by_inst_id:
+            matches = by_inst_id[rn]
+            if len(matches) == 1:
+                resolved.append(matches[0])
+            else:
+                errors.append(f"Ambiguous '{r}' (matches multiple boards); use instance/board:cardid")
+            continue
+        if '/' in r and ':' in r.split('/')[-1]:
+            # try instance/board:cardid
+            errors.append(f"Not found in today's agenda: {r}"); continue
+        if ':' in rn:
+            parts = rn.split(':', 1)
+            if len(parts) == 2:
+                k = f"{parts[0]}:{parts[1]}"
+                if k in by_inst_id:
+                    matches = by_inst_id[k]
+                    if len(matches) == 1: resolved.append(matches[0])
+                    else: errors.append(f"Ambiguous '{r}'; use instance/board:cardid")
+                    continue
+        if r.isdigit() and r in by_id:
+            matches = by_id[r]
+            if len(matches) == 1: resolved.append(matches[0])
+            else: errors.append(f"Ambiguous card id '{r}'; use instance:cardid or instance/board:cardid")
+            continue
+        errors.append(f"Not found in today's agenda: {r}")
+    # dedupe by (instance, board, id)
+    seen = set(); out = []
+    for it in resolved:
+        k = (it['instance'], it['board'], it['id'])
+        if k not in seen: seen.add(k); out.append(it)
+    return out, errors
+
+@cli.command("completed")
+@click.option("-i", "--instance")
+@click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
+@click.option("--archive", is_flag=True, help="Archive cards instead of moving to done stack")
+@click.option("--stack", type=int, help="Move to specific stack ID instead of done stack")
+@click.option("--desc-width", default=40, show_default=True, help="Max width for short description")
+@click.pass_context
+def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
+    """List today's agenda and mark selected cards as done."""
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg = load_config()
+    if not isinstance(cfg, dict) or not cfg.get('instances'):
+        raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
+    start, end, p = _agenda_range('today')
+    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug)
+    scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
+    header = f"Today's agenda ({start.strftime('%Y-%m-%d')}) [{scope}]"
+    click.echo()
+    click.echo(click.style(header, bold=True))
+    click.echo(click.style('─' * min(max(len(header), 72), 100), fg='blue'))
+    if not items:
+        click.echo(click.style("  No cards with due dates today.", dim=True))
+        click.echo()
+        return
+    for it in items:
+        due_s = it['due'].strftime('%H:%M')
+        desc = _short_desc(it['desc'], desc_width)
+        ref = f"{it['instance']}/{it['board']}#{it['id']}"
+        click.echo(click.style(f"  ● {it['title']}", bold=True) + click.style(f"  [{ref}]", fg='magenta'))
+        if desc:
+            click.echo(f"    {desc}")
+        click.echo(f"    {click.style('Due', fg='yellow')} {due_s}  {click.style('Where', fg='green')} {it['instance']} / {it['board']} / {it['stack']}")
+        click.echo()
+    click.echo("Enter completed cards as instance:cardid or instance/board:cardid (comma/space separated).")
+    click.echo("Example: kafit:20  or  kafit/personal:20")
+    refs = click.prompt("Completed", default="", show_default=False)
+    if not refs.strip():
+        click.echo("No cards marked completed.")
+        return
+    resolved, errors = _resolve_completed_refs(refs, items)
+    for e in errors:
+        click.echo(click.style(f"  Warning: {e}", fg='yellow'), err=True)
+    if not resolved:
+        click.echo("No valid cards to complete.", err=True)
+        return
+    for it in resolved:
+        inst_name = it['instance']; board_key = it['board']; card_id = it['id']
+        try:
+            _, inst, board = get_mapping(cfg, inst_name, board_key)
+            client = DeckClient(inst, debug=debug)
+            if archive:
+                client.archive_card(board['board_id'], card_id, archived=True)
+                click.echo(f"Archived #{card_id} ({inst_name}/{board_key}) - {it['title']}")
+            else:
+                ds = stack if stack is not None else board.get('done_stack_id')
+                if ds is None:
+                    click.echo(click.style(f"  Skipped #{card_id} ({inst_name}/{board_key}): no done stack configured", fg='yellow'), err=True)
+                    continue
+                client.move_card(board['board_id'], card_id, ds)
+                click.echo(f"Done #{card_id} ({inst_name}/{board_key}) - {it['title']}")
+        except Exception as e:
+            click.echo(click.style(f"  Error completing #{card_id} ({inst_name}/{board_key}): {e}", fg='red'), err=True)
+
 if __name__ == "__main__":
     cli()
