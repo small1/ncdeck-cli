@@ -10,6 +10,7 @@ instances:
     username: alice                    # Required. Your Nextcloud username
     password: app-password-here        # Required. Use an App Password
     verify: true                      # Optional. Set to false for self-signed certificates (use with caution)
+    color: cyan                       # Optional. Theme color for this instance's output (e.g. cyan, blue, magenta, green, yellow)
     boards:
       inbox:
         board_id: 1

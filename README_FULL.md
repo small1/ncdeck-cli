@@ -132,6 +132,7 @@ instances:
 | `username` | Instance | `string` | Yes | Your Nextcloud username. |
 | `password` | Instance | `string` | Yes | Your Nextcloud password or app password. App passwords are highly recommended. |
 | `verify` | Instance | `bool` | No | SSL certificate verification. Defaults to `true`. Only set to `false` if you have a self-signed/internal certificate and understand the security implications. |
+| `color` | Instance | `string` | No | Theme color for decorations/output for this instance (e.g. `cyan`, `blue`, `magenta`, `green`, `yellow`; `theme_color` also accepted). |
 | `boards` | Instance | `map` | Yes | Short names for boards/stacks used by `ncdeck` commands. |
 | `board_id` | Board mapping | `int` | Yes | Numeric ID of the Deck board. |
 | `stack_id` | Board mapping | `int` | Yes | Numeric ID of the default stack (list) to create cards in. |

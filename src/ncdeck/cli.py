@@ -365,22 +365,23 @@ def account():
 @account.command("add")
 @click.option("-i", "--instance", "instance_name", help="Short name for this instance")
 @click.option("--url", help="Nextcloud server URL")
-def account_add_cmd(instance_name, url):
+@click.option("--color", "theme_color", help="Theme color for this instance (e.g. cyan, blue, magenta, green, yellow)")
+def account_add_cmd(instance_name, url, theme_color):
     """Add a Nextcloud account via Login Flow v2 with board autodiscovery."""
     cfg = load_config()
     if not isinstance(cfg, dict): cfg = {}
     if 'instances' not in cfg or not isinstance(cfg['instances'], dict): cfg['instances'] = {}
     if not url: url = click.prompt("Nextcloud server URL (e.g. https://cloud.example.com)")
     url = url.rstrip('/')
-    click.echo(f"\nStarting Nextcloud Login Flow v2 for {url}...")
+    ui_info(f"Starting Nextcloud Login Flow v2 for {url}...", 'cyan')
     resp = requests.post(f"{url}/index.php/login/v2", headers={"User-Agent": "ncdeck-cli"}, timeout=30)
     resp.raise_for_status()
     flow = resp.json()
     login_url = flow['login']; poll = flow['poll']; endpoint = poll['endpoint']; token = poll['token']
-    click.echo(f"\nOpening browser to authenticate...\nIf browser doesn't open, visit: {login_url}")
+    ui_info(f"Opening browser to authenticate...\nIf browser doesn't open, visit: {login_url}", 'cyan')
     try: webbrowser.open(login_url)
     except: pass
-    click.echo("\nWaiting for authentication...")
+    ui_dim("Waiting for authentication...")
     creds=None
     for _ in range(120):
         try:
@@ -390,18 +391,21 @@ def account_add_cmd(instance_name, url):
         except: time.sleep(2); continue
     if not creds: raise click.ClickException("Authentication timed out or failed")
     server = creds.get('server', url); login_name = creds.get('loginName') or creds.get('user'); app_password = creds.get('appPassword')
-    click.echo(f"\nAuthenticated as {login_name} on {server}")
+    ui_ok(f"Authenticated as {login_name} on {server}")
     if not instance_name:
         default_name = login_name if login_name and login_name not in cfg['instances'] else f"nc_{login_name}"
         instance_name = click.prompt("Short name for this instance", default=default_name)
+    if theme_color is None:
+        theme_color = (click.prompt("Theme color (blank for cyan)", default="", show_default=False) or "").strip() or None
+    inst_color = _inst_color(theme_color)
     client = DeckClient({"url": server.rstrip('/'), "username": login_name, "password": app_password})
-    click.echo("\nDiscovering boards...")
+    ui_info("Discovering boards...", inst_color)
     boards = client.list_boards()
     boards_config={}
     if boards:
         for board in boards:
             board_id = board['id']; board_title = board['title']
-            click.echo(f"\n{'='*50}\nBoard: {board_title} (id: {board_id})")
+            ui_header(f"Board: {board_title} (id: {board_id})", inst_color)
             default_key = '_'.join(filter(None, ''.join(c.lower() if c.isalnum() else '_' for c in board_title).split('_')))
             if not default_key: default_key = f"board_{board_id}"
             board_key = click.prompt("Short name for this board", default=default_key)
@@ -409,11 +413,12 @@ def account_add_cmd(instance_name, url):
             stacks = client.list_stacks(board_id)
             stack_id=None; done_stack_id=None
             if stacks:
-                click.echo("\nStacks:")
-                for i,s in enumerate(stacks): click.echo(f"  {i+1}. {s['title']} (id: {s['id']})")
+                ui_kv("Stacks", "", inst_color)
+                for i,s in enumerate(stacks): click.echo(f"    {_st(str(i+1)+'.', fg=inst_color)} {s['title']} {_st(f'(id: {s['id']})', dim=True)}")
                 stack_id = click.prompt("Stack ID for creating new cards", default=stacks[0]['id'], type=int)
-                click.echo("\nWhich stack should be the 'done' stack?\n  0. None")
-                for i,s in enumerate(stacks): click.echo(f"  {i+1}. {s['title']} (id: {s['id']})")
+                ui_kv("Done stack", "choose 0 for none", inst_color)
+                click.echo(f"    {_st('0.', fg=inst_color)} None")
+                for i,s in enumerate(stacks): click.echo(f"    {_st(str(i+1)+'.', fg=inst_color)} {s['title']} {_st(f'(id: {s['id']})', dim=True)}")
                 done_choice = click.prompt("Done stack", default=0, type=int)
                 if done_choice>0 and done_choice<=len(stacks): done_stack_id=stacks[done_choice-1]['id']
             else:
@@ -421,11 +426,15 @@ def account_add_cmd(instance_name, url):
             be={"board_id":board_id,"stack_id":stack_id}
             if done_stack_id: be["done_stack_id"]=done_stack_id
             boards_config[board_key]=be
-    cfg['instances'][instance_name]={"url":server.rstrip('/'),"username":login_name,"password":app_password,"boards":boards_config}
+    inst_entry={"url":server.rstrip('/'),"username":login_name,"password":app_password,"boards":boards_config}
+    if theme_color: inst_entry["color"]=theme_color
+    cfg['instances'][instance_name]=inst_entry
     if not cfg.get('default_instance'): cfg['default_instance']=instance_name
     elif click.confirm(f"\nSet '{instance_name}' as default instance?", default=False): cfg['default_instance']=instance_name
     save_config(cfg)
-    click.echo(f"\n{'='*50}\nConfiguration saved to {get_config_path()}\nInstance '{instance_name}' added with {len(boards_config)} board(s)\n{'='*50}")
+    ui_sep(inst_color)
+    ui_ok(f"Configuration saved to {get_config_path()}")
+    ui_kv("Instance", f"{instance_name} ({len(boards_config)} board(s))", inst_color)
 
 @account.command("list")
 @click.pass_context
@@ -434,15 +443,17 @@ def account_list_cmd(ctx):
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
-        click.echo("No accounts configured. Run `ncdeck account add` to add one."); return
+        ui_warn("No accounts configured. Run `ncdeck account add` to add one."); return
     default = cfg.get('default_instance')
-    click.echo(f"Configured instances (default: {default or 'none'}):")
+    ui_header(f"Configured instances (default: {default or 'none'})", 'cyan')
     for name, inst in cfg.get('instances', {}).items():
-        marker = " *" if name == default else ""
-        click.echo(f"  {name}{marker} - {inst.get('url')} ({inst.get('username')})")
+        c = _inst_color(inst)
+        marker = _st(" [default]", fg=c, bold=True) if name == default else ""
+        clr = f" {_st(f'({inst.get('color') or inst.get('theme_color')})', dim=True)}" if (inst.get('color') or inst.get('theme_color')) else ""
+        click.echo(f"  {_st(name, fg=c, bold=True)}{marker} {_st(inst.get('url',''), dim=True)} {_st(f'@{inst.get('username')}', fg=c)}{clr}")
         for bk,bv in (inst.get('boards') or {}).items():
-            done = f", done_stack={bv.get('done_stack_id')}" if bv.get('done_stack_id') else ""
-            click.echo(f"    {bk}: board_id={bv.get('board_id')}, stack_id={bv.get('stack_id')}{done}")
+            done = f" {_st(f'done={bv.get('done_stack_id')}', dim=True)}" if bv.get('done_stack_id') else ""
+            click.echo(f"    {_st('•', fg=c)} {_st(bk, fg=c)}  board={bv.get('board_id')} stack={bv.get('stack_id')}{done}")
 
 
 @account.command("delete")
@@ -455,30 +466,32 @@ def account_delete_cmd(instance_name, force):
         raise click.ClickException("No configuration found")
     if 'instances' not in cfg or instance_name not in cfg['instances']:
         raise click.ClickException(f"Instance '{instance_name}' not found in config")
+    c = _inst_color(cfg['instances'].get(instance_name))
     if not force:
         if not click.confirm(f"Delete instance '{instance_name}'?"):
-            click.echo("Cancelled")
+            ui_warn("Cancelled")
             return
     del cfg['instances'][instance_name]
     if cfg.get('default_instance') == instance_name:
         if cfg['instances']:
             new_default = next(iter(cfg['instances'].keys()))
             cfg['default_instance'] = new_default
-            click.echo(f"Default instance changed to '{new_default}'")
+            ui_warn(f"Default instance changed to '{new_default}'")
         else:
             cfg.pop('default_instance', None)
     save_config(cfg)
-    click.echo(f"Deleted instance '{instance_name}'")
+    ui_ok(f"Deleted instance '{_st(instance_name, fg=c, bold=True)}'")
 
 @cli.command("show-config")
 def show_config_cmd():
     """Show current configuration with passwords masked."""
     cfg = load_config()
-    if not isinstance(cfg, dict): click.echo("No configuration found."); return
+    if not isinstance(cfg, dict): ui_warn("No configuration found."); return
     masked = json.loads(json.dumps(cfg))
     for inst_name, inst in masked.get('instances', {}).items():
         if isinstance(inst, dict) and inst.get('password'):
             inst['password'] = '****'
+    ui_header(f"Configuration: {get_config_path()}", 'cyan')
     click.echo(yaml.safe_dump(masked, sort_keys=False))
 
 @cli.command("list")
@@ -497,48 +510,60 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
     if not inst_name: raise click.ClickException("No instance specified")
     inst=cfg.get("instances",{}).get(inst_name)
     if not inst: raise click.ClickException(f"Instance '{inst_name}' not found")
-    client=DeckClient(inst, debug=debug)
+    client=DeckClient(inst, debug=debug); ic=_inst_color(inst)
     if boards:
-        for b in client.list_boards(): 
-            owner=(b.get("owner") or {}).get("uid"); click.echo(f"board_id={b['id']} title={b['title']} owner={owner}")
+        ui_header(f"Boards on {inst_name}", ic)
+        for b in client.list_boards():
+            owner=(b.get("owner") or {}).get("uid"); click.echo(f"  {_st('board', fg=ic)}={b['id']} {_st(str(b['title']), bold=True)} {_st(f'owner={owner}', dim=True)}")
         return
     if stacks is not None:
-        for s in client.list_stacks(stacks): click.echo(f"stack_id={s['id']} title={s['title']} order={s.get('order')}")
+        ui_header(f"Stacks for board {stacks} ({inst_name})", ic)
+        for s in client.list_stacks(stacks): click.echo(f"  {_st('stack', fg=ic)}={s['id']} {_st(str(s['title']), bold=True)} {_st(f'order={s.get('order')}', dim=True)}")
         return
     if cards_board:
         inst_name_res,inst_res,board=get_mapping(cfg,instance,cards_board)
         cards=client.list_cards(board["board_id"],stack_id=stack)
-        uname = inst_res.get('username')
+        uname = inst_res.get('username'); rc=_inst_color(inst_res)
         if not all_cards and uname and _board_is_shared(client, board["board_id"], uname):
             cards = [c for c in cards if _card_assigned_to(c, uname)]
-        click.echo(f"Cards for {inst_name_res}/{cards_board}:")
-        if not cards: click.echo("  (no cards found)"); return
+        ui_header(f"Cards: {inst_name_res}/{cards_board}", rc)
+        if not cards: ui_dim("  (no cards found)"); return
         for card in cards:
             card_id=card.get('id'); title=card.get('title') or '(untitled)'; st=card.get('_stack_title') or card.get('stackTitle') or ''
-            ar=" [ARCHIVED]" if card.get('archived') else ""; du=card.get('duedate'); asn=card.get('assignedUsers') or card.get('assignedusers') or []
-            astr=""; 
+            du=card.get('duedate'); asn=card.get('assignedUsers') or card.get('assignedusers') or []
+            flags=[]
+            if card.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
+            if card.get('done'): flags.append(_st('DONE', fg='green'))
+            fstr=(' '+' '.join(f'[{f}]' for f in flags)) if flags else ''
+            stack_s=f" {_st(f'[{st}]', fg=rc)}" if st else ''
+            astr=""
             if asn:
                 ns=[]
                 for a in asn:
-                    if isinstance(a,dict): n=a.get('participant',{}).get('displayname') or a.get('displayname') or a.get('uid'); 
+                    if isinstance(a,dict): n=a.get('participant',{}).get('displayname') or a.get('displayname') or a.get('uid')
+                    else: n=None
                     if n: ns.append(n)
-                if ns: astr=f" @{','.join(ns)}"
-            click.echo(f"  #{card_id} [{st}]{ar} {title}{astr}" if st else f"  #{card_id}{ar} {title}{astr}")
-            if du: click.echo(f"    Due: {_fmt_ts(du)}")
+                if ns: astr=f" {_st('@'+','.join(ns), dim=True)}"
+            click.echo(f"  {_st('#'+str(card_id), fg=rc, bold=True)}{stack_s}{fstr} {title}{astr}")
+            if du: ui_kv("Due", _fmt_ts(du), rc, label_width=10)
         return
     if labels_board:
         inst_name_res,inst_res,board=get_mapping(cfg,instance,labels_board)
+        rc=_inst_color(inst_res)
         try:
             labels=client.list_labels(board["board_id"])
-            click.echo(f"Tags/labels for {inst_name_res}/{labels_board}:")
-            if not labels: click.echo("  (no labels found)"); return
-            for l in labels: click.echo(f"  - {(l.get('title') or l.get('name'))} (id={l['id']})")
-        except Exception as e: click.echo(f"Error: {e}",err=True)
+            ui_header(f"Tags/labels: {inst_name_res}/{labels_board}", rc)
+            if not labels: ui_dim("  (no labels found)"); return
+            for l in labels: click.echo(f"  {_st('•', fg=rc)} {(l.get('title') or l.get('name'))} {_st(f'(id={l['id']})', dim=True)}")
+        except Exception as e: ui_err(str(e))
         return
-    click.echo(f"Instance: {inst_name} ({inst['url']})")
+    ui_header(f"Instance: {inst_name}", ic)
+    ui_kv("URL", inst.get('url',''), ic)
+    ui_kv("User", inst.get('username',''), ic)
+    if inst.get('color') or inst.get('theme_color'): ui_kv("Color", inst.get('color') or inst.get('theme_color'), ic)
     for k,v in inst.get("boards",{}).items():
-        di=f" done_stack_id={v['done_stack_id']}" if v.get("done_stack_id") else ""
-        click.echo(f"  - {k}: board_id={v['board_id']} stack_id={v['stack_id']}{di}")
+        di=f" done_stack={v['done_stack_id']}" if v.get("done_stack_id") else ""
+        click.echo(f"  {_st('•', fg=ic)} {_st(k, fg=ic, bold=True)}  board={v['board_id']} stack={v['stack_id']}{_st(di, dim=True)}")
 
 @cli.command("create")
 @click.argument("board_key")
@@ -556,23 +581,24 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
     """Create a new card on a board."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
+    ic=_inst_color(inst)
     ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
     due_norm = _normalize_create_duedate(due_date) if due_date else None
     assigned_users = list(assign) if assign else ([inst['username']] if inst.get('username') else None)
     try:
         card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_norm,labels=lids if lids else None,assigned_users=assigned_users)
-        click.echo(f"Created card #{card['id']} '{card['title']}' in {inst_name}/{board_key}")
-        if due_norm: click.echo(f"  Due: {_fmt_ts(due_norm)}")
-        if tag: click.echo(f"  Tags: {', '.join(tag)}")
-        if assigned_users: click.echo(f"  Assigned: {', '.join(assigned_users)}")
+        ui_ok(f"Created card {_st('#'+str(card['id']), fg=ic, bold=True)} {_st(card['title'], bold=True)} in {_st(f'{inst_name}/{board_key}', fg=ic)}")
+        if due_norm: ui_kv("Due", _fmt_ts(due_norm), ic)
+        if tag: ui_kv("Tags", ', '.join(tag), ic)
+        if assigned_users: ui_kv("Assigned", ', '.join(assigned_users), ic)
         for a in attach:
             try:
                 client.upload_attachment(board["board_id"], card['id'], a)
-                click.echo(f"  Attached: {Path(a).name}")
+                ui_kv("Attached", Path(a).name, ic)
             except Exception as e:
-                click.echo(f"  Failed to attach {Path(a).name}: {e}", err=True)
-    except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
+                ui_warn(f"Failed to attach {Path(a).name}: {e}")
+    except Exception as e: ui_err(str(e)); sys.exit(1)
 
 @cli.command("done")
 @click.argument("board_key")
@@ -585,14 +611,18 @@ def done_cmd(ctx,board_key,card_id,instance,stack,archive):
     """Mark a card as done and move it to the done stack (or archive it)."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
+    ic=_inst_color(inst)
     try:
-        if archive: client.archive_card(board["board_id"],card_id,archived=True); click.echo(f"Archived card #{card_id}"); return
+        if archive:
+            client.archive_card(board["board_id"],card_id,archived=True)
+            ui_ok(f"Archived card {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+            return
         ds=stack if stack is not None else board.get("done_stack_id")
         if ds is None: raise click.ClickException("No done stack configured")
         client.mark_card_done(board["board_id"], card_id, done=True)
         client.move_card(board["board_id"], card_id, ds)
-        click.echo(f"Marked card #{card_id} as done")
-    except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
+        ui_ok(f"Marked card {_st('#'+str(card_id), fg=ic, bold=True)} as done ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+    except Exception as e: ui_err(str(e)); sys.exit(1)
 
 @cli.command("move")
 @click.argument("board_key")
@@ -604,8 +634,11 @@ def move_cmd(ctx,board_key,card_id,stack_id,instance):
     """Move a card to a different stack."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
-    try: client.move_card(board["board_id"],card_id,stack_id); click.echo(f"Moved card #{card_id} to stack {stack_id}")
-    except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
+    ic=_inst_color(inst)
+    try:
+        client.move_card(board["board_id"],card_id,stack_id)
+        ui_ok(f"Moved card {_st('#'+str(card_id), fg=ic, bold=True)} to stack {_st(str(stack_id), fg=ic)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+    except Exception as e: ui_err(str(e)); sys.exit(1)
 
 @cli.command("assign")
 @click.argument("board_key")
@@ -618,10 +651,15 @@ def assign_cmd(ctx,board_key,card_id,user_id,instance,unassign):
     """Assign or unassign a user to/from a card."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
+    ic=_inst_color(inst)
     try:
-        if unassign: client.unassign_card(board["board_id"],card_id,user_id); click.echo(f"Unassigned card #{card_id} from {user_id}")
-        else: client.assign_card(board["board_id"],card_id,user_id); click.echo(f"Assigned card #{card_id} to {user_id}")
-    except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
+        if unassign:
+            client.unassign_card(board["board_id"],card_id,user_id)
+            ui_ok(f"Unassigned {_st('#'+str(card_id), fg=ic, bold=True)} from {_st(user_id, fg=ic)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+        else:
+            client.assign_card(board["board_id"],card_id,user_id)
+            ui_ok(f"Assigned {_st('#'+str(card_id), fg=ic, bold=True)} to {_st(user_id, fg=ic)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+    except Exception as e: ui_err(str(e)); sys.exit(1)
 
 
 @cli.command("attach")
@@ -634,10 +672,11 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
     """Attach a file to an existing card."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
+    ic=_inst_color(inst)
     try:
         client.upload_attachment(board["board_id"],card_id,file_path)
-        click.echo(f"Attached {file_path.name} to card #{card_id} in {inst_name}/{board_key}")
-    except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
+        ui_ok(f"Attached {_st(file_path.name, bold=True)} to {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+    except Exception as e: ui_err(str(e)); sys.exit(1)
 
 @cli.command("search")
 @click.argument("board_key")
@@ -659,12 +698,18 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
     for c in cards:
         if not include_archived and c.get('archived'): continue
         if ql in (c.get('title') or '').lower() or ql in (c.get('description') or '').lower(): res.append(c)
-    if not res: click.echo(f"No cards found matching '{query}'"); return
-    click.echo(f"Found {len(res)} card(s):")
+    ic = _inst_color(inst)
+    if not res: ui_dim(f"No cards found matching '{query}' in {inst_name}/{board_key}"); return
+    ui_header(f"Search: '{query}' in {inst_name}/{board_key} ({len(res)} match(es))", ic)
     for c in res:
-        cid=c.get('id'); t=c.get('title'); st=c.get('_stack_title') or c.get('stackTitle') or ''; ar=" [ARCHIVED]" if c.get('archived') else ""
-        click.echo(f"  #{cid} [{st}]{ar} {t}" if st else f"  #{cid}{ar} {t}")
-        if c.get('duedate'): click.echo(f"    Due: {_fmt_ts(c['duedate'])}")
+        cid=c.get('id'); t=c.get('title') or '(untitled)'; st=c.get('_stack_title') or c.get('stackTitle') or ''
+        flags = []
+        if c.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
+        if c.get('done'): flags.append(_st('DONE', fg='green'))
+        fstr = (' ' + ' '.join(f'[{f}]' for f in flags)) if flags else ''
+        stack_s = f" {_st(f'[{st}]', fg=ic)}" if st else ''
+        click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr} {t}")
+        if c.get('duedate'): ui_kv("Due", _fmt_ts(c['duedate']), ic, label_width=10)
 
 @cli.command("show")
 @click.argument("board_key")
@@ -676,30 +721,31 @@ def show_cmd(ctx,board_key,card_id,instance):
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     card=client.get_card_full(board["board_id"],card_id)
-    click.echo("="*60); click.echo(f"Card #{card.get('id')}: {card.get('title')}"); click.echo("="*60)
-    click.echo(f"Board: {inst_name}/{board_key}")
-    st=card.get('_stack_title') or card.get('stackTitle'); click.echo(f"Stack: {st}" if st else f"Stack ID: {card.get('stackId')}")
+    ic = _inst_color(inst)
+    ui_header(f"Card #{card.get('id')}: {card.get('title')}", ic)
+    ui_kv("Board", f"{inst_name}/{board_key}", ic)
+    st=card.get('_stack_title') or card.get('stackTitle'); ui_kv("Stack", st if st else f"ID {card.get('stackId')}", ic)
     done_ts = card.get('done')
-    status = 'Archived' if card.get('archived') else 'Active'
-    if done_ts: status += f" (Done: {_fmt_ts(done_ts)})"
-    click.echo(f"Status: {status}")
-    click.echo(f"Due Date: {_fmt_ts(card.get('duedate')) if card.get('duedate') else 'None'}")
+    status = 'Archived' if card.get('archived') else ('Done' if done_ts else 'Active')
+    ui_kv("Status", status, ic)
+    if done_ts: ui_kv("Done at", _fmt_ts(done_ts), ic)
+    ui_kv("Due", _fmt_ts(card.get('duedate')) if card.get('duedate') else 'None', ic)
     labels=card.get('labels') or []
-    if labels:
-        ns=[l.get('title') or l.get('name') for l in labels if l.get('title') or l.get('name')]
-        click.echo(f"Labels: {', '.join(ns) if ns else 'None'}")
-    else: click.echo("Labels: None")
+    ns=[l.get('title') or l.get('name') for l in labels if l.get('title') or l.get('name')] if labels else []
+    ui_kv("Labels", ', '.join(ns) if ns else 'None', ic)
     asn=card.get('assignedUsers') or card.get('assignedusers') or []
-    if asn:
-        ns=[]
-        for a in asn:
-            if isinstance(a,dict): n=a.get('participant',{}).get('displayname') or a.get('displayname') or a.get('uid'); 
-            if n: ns.append(n)
-        click.echo(f"Assignees: {', '.join(ns) if ns else 'None'}")
-    else: click.echo("Assignees: None")
-    click.echo(f"Created: {_fmt_ts(card.get('createdAt'))}")
-    click.echo(f"Last Modified: {_fmt_ts(card.get('lastModified'))}")
-    click.echo("="*60); click.echo("Description:"); click.echo(card.get('description') or "(empty)"); click.echo("="*60)
+    ans=[]
+    for a in asn:
+        if isinstance(a,dict): n=a.get('participant',{}).get('displayname') or a.get('displayname') or a.get('uid')
+        else: n=None
+        if n: ans.append(n)
+    ui_kv("Assignees", ', '.join(ans) if ans else 'None', ic)
+    ui_kv("Created", _fmt_ts(card.get('createdAt')), ic)
+    ui_kv("Modified", _fmt_ts(card.get('lastModified')), ic)
+    ui_sep(ic)
+    click.echo(_st("  Description", fg=ic, bold=True))
+    click.echo(f"  {card.get('description') or '(empty)'}")
+    ui_sep(ic)
 
 def _fmt_ts(v):
     if v is None or v == '': return 'None'
@@ -806,6 +852,50 @@ def _short_desc(text, width=50):
     return t[:width-1] + '…'
 
 
+
+# ---- UI / theming ----
+def _inst_color(inst=None, cfg=None, inst_name=None, default='cyan'):
+    if isinstance(inst, str):
+        # allow passing color directly
+        return inst or default
+    if inst and isinstance(inst, dict):
+        c = inst.get('color') or inst.get('theme_color')
+        if c: return c
+    if cfg and inst_name:
+        try:
+            c = ((cfg.get('instances') or {}).get(inst_name) or {}).get('color') or ((cfg.get('instances') or {}).get(inst_name) or {}).get('theme_color')
+            if c: return c
+        except Exception: pass
+    return default
+
+def _st(text, fg=None, bold=False, dim=False):
+    try:
+        return click.style(str(text), fg=fg, bold=bold, dim=dim)
+    except Exception:
+        return str(text)
+
+def ui_header(title, color='cyan'):
+    line = '─' * min(max(len(str(title)), 40), 100)
+    click.echo()
+    click.echo(_st(title, fg=color, bold=True))
+    click.echo(_st(line, fg=color))
+
+def ui_kv(label, value, color='cyan', label_width=12):
+    lab = f"{label}:".ljust(label_width)
+    click.echo(f"  {_st(lab, fg=color)} {value}")
+
+def ui_ok(msg): click.echo(_st(f"✔ {msg}", fg='green'))
+def ui_warn(msg): click.echo(_st(f"⚠ {msg}", fg='yellow'), err=True)
+def ui_err(msg): click.echo(_st(f"✖ {msg}", fg='red'), err=True)
+def ui_info(msg, color='cyan'): click.echo(_st(msg, fg=color))
+def ui_dim(msg): click.echo(_st(msg, dim=True))
+def ui_sep(color='cyan', width=60): click.echo(_st('─' * width, fg=color))
+def ui_card_ref(card_id, title=None, color='cyan'):
+    ref = _st(f"#{card_id}", fg=color, bold=True)
+    if title is not None:
+        return f"{ref} {title}"
+    return ref
+
 def _card_assigned_to(card, username):
     if not username: return False
     u = str(username).lower()
@@ -895,26 +985,26 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
     start, end, p = _agenda_range(period)
     items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, all_cards=all_cards)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
+    hc = 'cyan' if all_instances else _inst_color(cfg.get('instances',{}).get(scope))
     header = f"Agenda: {p}  ({start.strftime('%Y-%m-%d')} → {(end - timedelta(seconds=1)).strftime('%Y-%m-%d')})  [{scope}]"
-    click.echo()
-    click.echo(click.style(header, bold=True))
-    click.echo(click.style('─' * min(max(len(header), 72), 100), fg='blue'))
+    ui_header(header, hc)
     if not items:
-        click.echo(click.style("  No cards with due dates in this period.", dim=True))
+        ui_dim("  No cards with due dates in this period.")
         click.echo()
         return
     for it in items:
+        ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
         due_s = it['due'].strftime('%a %Y-%m-%d %H:%M')
         title = it['title']
         desc = _short_desc(it['desc'], desc_width)
-        loc = f"{it['instance']} / {it['board']} / {it['stack']}"
-        click.echo(click.style(f"  ● {title}", bold=True) + click.style(f"  (#{it['id']})", dim=True))
+        loc = f"{it['instance']}/{it['board']} / {it['stack']}"
+        click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)} {_st(f'(#{it["id"]})', fg=ic)}")
         if desc:
-            click.echo(f"    {click.style('Desc:', fg='cyan')}   {desc}")
-        click.echo(f"    {click.style('Due:', fg='yellow')}    {due_s}")
-        click.echo(f"    {click.style('Where:', fg='green')}  {loc}")
+            ui_kv("Desc", desc, ic, label_width=10)
+        ui_kv("Due", due_s, ic, label_width=10)
+        ui_kv("Where", loc, ic, label_width=10)
         click.echo()
-    click.echo(click.style(f"Total: {len(items)} card(s)", dim=True))
+    ui_dim(f"Total: {len(items)} card(s)")
     click.echo()
 
 def _resolve_completed_refs(refs_text, items):
@@ -989,81 +1079,83 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
     start, end, p = _agenda_range('today')
     items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False, all_cards=all_cards)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
+    hc = 'cyan' if all_instances else _inst_color(cfg.get('instances',{}).get(scope))
     header = f"Today's agenda ({start.strftime('%Y-%m-%d')}) [{scope}]"
-    click.echo()
-    click.echo(click.style(header, bold=True))
-    click.echo(click.style('─' * min(max(len(header), 72), 100), fg='blue'))
+    ui_header(header, hc)
     if not items:
-        click.echo(click.style("  No cards with due dates today.", dim=True))
+        ui_dim("  No cards with due dates today.")
         click.echo()
         return
     for it in items:
+        ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
         due_s = it['due'].strftime('%H:%M')
         desc = _short_desc(it['desc'], desc_width)
         ref = f"{it['instance']}/{it['board']}#{it['id']}"
-        click.echo(click.style(f"  ● {it['title']}", bold=True) + click.style(f"  [{ref}]", fg='magenta'))
+        click.echo(f"  {_st('●', fg=ic)} {_st(it['title'], bold=True)} {_st(f'[{ref}]', fg=ic)}")
         if desc:
-            click.echo(f"    {desc}")
-        click.echo(f"    {click.style('Due', fg='yellow')} {due_s}  {click.style('Where', fg='green')} {it['instance']} / {it['board']} / {it['stack']}")
+            click.echo(f"    {_st(desc, dim=False)}")
+        click.echo(f"    {_st('Due:', fg=ic)} {due_s}  {_st('Where:', fg=ic)} {_st(f"{it['instance']}/{it['board']} / {it['stack']}", fg=ic)}")
         click.echo()
-    click.echo("Enter completed cards as instance:cardid or instance/board:cardid (comma/space separated).")
-    click.echo("Example: mync:20  or  mync/personal:20")
+    click.echo(_st("Enter completed cards as instance:cardid or instance/board:cardid (comma/space separated).", dim=True))
+    click.echo(_st("Example: mync:20  or  mync/personal:20", dim=True))
     refs = click.prompt("Completed", default="", show_default=False)
     resolved = []
     errors = []
     if refs.strip():
         resolved, errors = _resolve_completed_refs(refs, items)
         for e in errors:
-            click.echo(click.style(f"  Warning: {e}", fg='yellow'), err=True)
+            ui_warn(e)
     completed_ok = []
     completed_keys = set()
     for it in resolved:
         inst_name = it['instance']; board_key = it['board']; card_id = it['id']
+        ic = _inst_color(cfg.get('instances',{}).get(inst_name))
         try:
             _, inst, board = get_mapping(cfg, inst_name, board_key)
             client = DeckClient(inst, debug=debug)
             if archive:
                 client.archive_card(board['board_id'], card_id, archived=True)
-                click.echo(f"Archived #{card_id} ({inst_name}/{board_key}) - {it['title']}")
+                ui_ok(f"Archived {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)}) - {it['title']}")
             else:
                 ds = stack if stack is not None else board.get('done_stack_id')
                 if ds is None:
-                    click.echo(click.style(f"  Skipped #{card_id} ({inst_name}/{board_key}): no done stack configured", fg='yellow'), err=True)
+                    ui_warn(f"Skipped #{card_id} ({inst_name}/{board_key}): no done stack configured")
                     continue
                 client.mark_card_done(board['board_id'], card_id, done=True)
                 client.move_card(board['board_id'], card_id, ds)
-                click.echo(f"Done #{card_id} ({inst_name}/{board_key}) - {it['title']}")
+                ui_ok(f"Done {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)}) - {it['title']}")
             completed_ok.append(it)
             completed_keys.add((inst_name, board_key, card_id))
         except Exception as e:
-            click.echo(click.style(f"  Error completing #{card_id} ({inst_name}/{board_key}): {e}", fg='red'), err=True)
+            ui_err(f"Error completing #{card_id} ({inst_name}/{board_key}): {e}")
     moved = []
     move_errors = []
     for it in items:
         k = (it['instance'], it['board'], it['id'])
         if k in completed_keys:
             continue
+        ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
         try:
             _, inst, board = get_mapping(cfg, it['instance'], it['board'])
             client = DeckClient(inst, debug=debug)
             new_due = (it['due'] + timedelta(days=1)).isoformat()
             client.update_card_duedate(board['board_id'], it['id'], new_due)
             moved.append((it, new_due))
-            click.echo(f"Moved to next day #{it['id']} ({it['instance']}/{it['board']}) - {it['title']} -> {_fmt_ts(new_due)}")
+            ui_ok(f"Moved to next day {_st('#'+str(it['id']), fg=ic, bold=True)} ({_st(f"{it['instance']}/{it['board']}", fg=ic)}) - {it['title']} → {_fmt_ts(new_due)}")
         except Exception as e:
             move_errors.append((it, e))
-            click.echo(click.style(f"  Error moving #{it['id']} ({it['instance']}/{it['board']}): {e}", fg='red'), err=True)
-    click.echo()
-    click.echo(click.style("Summary", bold=True))
-    click.echo(click.style("─" * 40, fg='blue'))
-    click.echo(f"  Completed: {len(completed_ok)}")
+            ui_err(f"Error moving #{it['id']} ({it['instance']}/{it['board']}): {e}")
+    ui_header("Summary", hc)
+    ui_kv("Completed", str(len(completed_ok)), hc)
     for it in completed_ok:
-        click.echo(f"    - #{it['id']} {it['instance']}/{it['board']}: {it['title']}")
-    click.echo(f"  Moved to next day: {len(moved)}")
+        ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
+        click.echo(f"    {_st('-', fg=ic)} {_st('#'+str(it['id']), fg=ic, bold=True)} {_st(f"{it['instance']}/{it['board']}", fg=ic)}: {it['title']}")
+    ui_kv("Moved", str(len(moved)), hc)
     for it, nd in moved:
-        click.echo(f"    - #{it['id']} {it['instance']}/{it['board']}: {it['title']} (due {_fmt_ts(nd)})")
+        ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
+        click.echo(f"    {_st('-', fg=ic)} {_st('#'+str(it['id']), fg=ic, bold=True)} {_st(f"{it['instance']}/{it['board']}", fg=ic)}: {it['title']} {_st(f'(due {_fmt_ts(nd)})', dim=True)}")
     if move_errors:
-        click.echo(f"  Move errors: {len(move_errors)}")
+        ui_kv("Move errors", str(len(move_errors)), 'red')
     click.echo()
 
 if __name__ == "__main__":
