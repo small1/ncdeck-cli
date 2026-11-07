@@ -151,7 +151,26 @@ class DeckClient:
         card = self.get_card(board_id, card_id)
         cur_stack = card.get('stackId')
         payload = {"order": int(order), "stackId": int(target_stack_id)}
-        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{cur_stack}/cards/{card_id}/reorder", payload)
+        result = self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{cur_stack}/cards/{card_id}/reorder", payload)
+        # Some Deck versions return 200 but don't move; verify and fallback
+        try:
+            res_stack = None
+            if isinstance(result, dict):
+                res_stack = result.get('stackId')
+            elif isinstance(result, list) and result:
+                if isinstance(result[0], dict):
+                    res_stack = result[0].get('stackId')
+            if res_stack is not None and int(res_stack) != int(target_stack_id):
+                if self.debug:
+                    click.echo(f"[DEBUG] Reorder did not move card (stack still {res_stack}), trying update fallback", err=True)
+                card2 = self.get_card(board_id, card_id)
+                up = self._card_update_payload(card2)
+                up["stackId"] = int(target_stack_id)
+                return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{cur_stack}/cards/{card_id}", up)
+        except Exception as e:
+            if self.debug:
+                click.echo(f"[DEBUG] Reorder fallback check error: {e}", err=True)
+        return result
 
     def move_card(self, board_id, card_id, stack_id):
         return self.reorder_card(board_id, card_id, stack_id, order=0)
