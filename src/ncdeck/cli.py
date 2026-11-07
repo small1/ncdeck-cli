@@ -854,17 +854,54 @@ def _short_desc(text, width=50):
 
 
 # ---- UI / theming ----
+def _normalize_color(c, default='cyan'):
+    if c is None or c == '':
+        return default
+    # RGB list/tuple from config: [139, 0, 0] or (139,0,0)
+    if isinstance(c, (list, tuple)) and len(c) == 3:
+        try:
+            return (int(c[0]), int(c[1]), int(c[2]))
+        except Exception:
+            return default
+    if isinstance(c, str):
+        s = c.strip()
+        if not s:
+            return default
+        # hex: #RRGGBB or #RGB
+        if s.startswith('#'):
+            h = s[1:]
+            try:
+                if len(h) == 6:
+                    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+                if len(h) == 3:
+                    return (int(h[0]*2, 16), int(h[1]*2, 16), int(h[2]*2, 16))
+            except Exception:
+                return default
+        # allow "r,g,b"
+        if ',' in s and not s.startswith('bright_'):
+            parts = [p.strip() for p in s.split(',')]
+            if len(parts) == 3 and all(p.lstrip('-').isdigit() for p in parts):
+                try:
+                    return (int(parts[0]), int(parts[1]), int(parts[2]))
+                except Exception:
+                    pass
+        return s
+    return default
+
 def _inst_color(inst=None, cfg=None, inst_name=None, default='cyan'):
-    if isinstance(inst, str):
-        # allow passing color directly
-        return inst or default
+    if isinstance(inst, str) and inst not in ('',):
+        # allow passing color directly (named/hex/rgb string)
+        return _normalize_color(inst, default)
+    if isinstance(inst, (list, tuple)):
+        return _normalize_color(inst, default)
     if inst and isinstance(inst, dict):
         c = inst.get('color') or inst.get('theme_color')
-        if c: return c
+        if c not in (None, ''): return _normalize_color(c, default)
     if cfg and inst_name:
         try:
-            c = ((cfg.get('instances') or {}).get(inst_name) or {}).get('color') or ((cfg.get('instances') or {}).get(inst_name) or {}).get('theme_color')
-            if c: return c
+            inst2 = (cfg.get('instances') or {}).get(inst_name) or {}
+            c = inst2.get('color') or inst2.get('theme_color')
+            if c not in (None, ''): return _normalize_color(c, default)
         except Exception: pass
     return default
 
