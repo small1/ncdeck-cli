@@ -424,6 +424,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack):
 @click.option("-i","--instance")
 @click.pass_context
 def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
+    debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ct=f"{prefix}{title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
@@ -447,7 +448,9 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
 @click.option("-i","--instance")
 @click.option("--stack",type=int)
 @click.option("--archive",is_flag=True)
-def done_cmd(board_key,card_id,instance,stack,archive):
+@click.pass_context
+def done_cmd(ctx,board_key,card_id,instance,stack,archive):
+    debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
         if archive: client.archive_card(board["board_id"],card_id,archived=True); click.echo(f"Archived card #{card_id}"); return
@@ -461,7 +464,9 @@ def done_cmd(board_key,card_id,instance,stack,archive):
 @click.argument("card_id",type=int)
 @click.argument("stack_id",type=int)
 @click.option("-i","--instance")
-def move_cmd(board_key,card_id,stack_id,instance):
+@click.pass_context
+def move_cmd(ctx,board_key,card_id,stack_id,instance):
+    debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try: client.move_card(board["board_id"],card_id,stack_id); click.echo(f"Moved card #{card_id} to stack {stack_id}")
     except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
@@ -472,7 +477,9 @@ def move_cmd(board_key,card_id,stack_id,instance):
 @click.argument("user_id")
 @click.option("-i","--instance")
 @click.option("--unassign",is_flag=True)
-def assign_cmd(board_key,card_id,user_id,instance,unassign):
+@click.pass_context
+def assign_cmd(ctx,board_key,card_id,user_id,instance,unassign):
+    debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
         if unassign: client.unassign_card(board["board_id"],card_id); click.echo(f"Unassigned card #{card_id}")
@@ -501,7 +508,9 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
 @click.option("-i","--instance")
 @click.option("--stack",type=int)
 @click.option("--include-archived",is_flag=True)
-def search_cmd(board_key,query,instance,stack,include_archived):
+@click.pass_context
+def search_cmd(ctx,board_key,query,instance,stack,include_archived):
+    debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     cards=client.list_cards(board["board_id"],stack_id=stack)
     ql=query.lower(); res=[]
