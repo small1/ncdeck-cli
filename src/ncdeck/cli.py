@@ -956,7 +956,7 @@ def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
         click.echo(f"    {click.style('Due', fg='yellow')} {due_s}  {click.style('Where', fg='green')} {it['instance']} / {it['board']} / {it['stack']}")
         click.echo()
     click.echo("Enter completed cards as instance:cardid or instance/board:cardid (comma/space separated).")
-    click.echo("Example: kafit:20  or  kafit/personal:20")
+    click.echo("Example: mync:20  or  mync/personal:20")
     refs = click.prompt("Completed", default="", show_default=False)
     resolved = []
     errors = []
