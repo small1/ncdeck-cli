@@ -75,13 +75,13 @@ class DeckClient:
         # Remove read-only/computed fields that can cause 400 on some Deck versions
         for k in ('ETag', 'lastModified', 'lastEditor', 'createdAt', 'deletedAt',
                   'attachments', 'attachmentCount', 'commentsCount', 'commentsUnread',
-                  'owner', 'permissions', 'relatedStack', 'relatedBoard', 'overdue',
-                  'id'):
+                  'permissions', 'relatedStack', 'relatedBoard', 'overdue', 'id',
+                  'notified', 'deletedAt'):
             payload.pop(k, None)
-        # Remove null optional fields that some Deck versions reject
-        for k in ('done', 'startdate', 'color', 'referenceData'):
-            if payload.get(k) is None:
-                payload.pop(k, None)
+        # Normalize owner to uid string if object
+        o = payload.get('owner')
+        if isinstance(o, dict):
+            payload['owner'] = o.get('uid') or o.get('primaryKey') or ''
         # Normalize duedate to UTC Z format if present
         dd = payload.get('duedate')
         if isinstance(dd, str) and dd:
@@ -141,20 +141,66 @@ class DeckClient:
             for c in self.list_cards(board_id):
                 if c.get('id')==int(card_id): return c
             raise
+    def _owner_uid(self, card):
+        o = card.get('owner')
+        if isinstance(o, str): return o
+        if isinstance(o, dict): return o.get('uid') or o.get('primaryKey') or ''
+        return ''
+
+    def reorder_card(self, board_id, card_id, target_stack_id, order=0):
+        card = self.get_card(board_id, card_id)
+        cur_stack = card.get('stackId')
+        payload = {"order": int(order), "stackId": int(target_stack_id)}
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{cur_stack}/cards/{card_id}/reorder", payload)
+
     def move_card(self, board_id, card_id, stack_id):
-        card = self.get_card(board_id, card_id); payload=card; payload["stackId"]=int(stack_id)
-        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
+        return self.reorder_card(board_id, card_id, stack_id, order=0)
+
+    def _card_update_payload(self, card):
+        payload = {
+            "title": card.get('title') or '',
+            "description": card.get('description') or '',
+            "type": card.get('type') or 'plain',
+            "order": card.get('order') if card.get('order') is not None else 0,
+            "duedate": card.get('duedate'),
+            "archived": bool(card.get('archived')),
+            "done": card.get('done'),
+        }
+        owner = self._owner_uid(card)
+        if owner:
+            payload["owner"] = owner
+        # Normalize duedate
+        if isinstance(payload.get('duedate'), str) and payload['duedate']:
+            dt = _parse_duedate(payload['duedate'])
+            if dt:
+                payload['duedate'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        return payload
+
     def assign_card(self, board_id, card_id, user_id):
-        card = self.get_card(board_id, card_id); payload=card; payload["assignedUsers"]=[{"participant":{"primaryKey":user_id}}]
-        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
-    def unassign_card(self, board_id, card_id):
-        card = self.get_card(board_id, card_id); payload=card; payload["assignedUsers"]=[]
-        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
+        card = self.get_card(board_id, card_id)
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/assignUser", {"userId": user_id})
+
+    def unassign_card(self, board_id, card_id, user_id):
+        card = self.get_card(board_id, card_id)
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/unassignUser", {"userId": user_id})
+
     def archive_card(self, board_id, card_id, archived=True):
-        card = self.get_card(board_id, card_id); payload=card; payload["archived"]=bool(archived)
-        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
+        card = self.get_card(board_id, card_id)
+        ep = 'archive' if archived else 'unarchive'
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/{ep}", {})
+
     def update_card_duedate(self, board_id, card_id, duedate):
-        card = self.get_card(board_id, card_id); payload=card; payload["duedate"]=duedate
+        card = self.get_card(board_id, card_id)
+        payload = self._card_update_payload(card)
+        # normalize input duedate
+        if isinstance(duedate, str) and duedate:
+            dt = _parse_duedate(duedate)
+            if dt:
+                payload['duedate'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            else:
+                payload['duedate'] = duedate
+        else:
+            payload['duedate'] = duedate
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
     def list_labels(self, board_id):
         try:
@@ -517,7 +563,7 @@ def assign_cmd(ctx,board_key,card_id,user_id,instance,unassign):
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     try:
-        if unassign: client.unassign_card(board["board_id"],card_id); click.echo(f"Unassigned card #{card_id}")
+        if unassign: client.unassign_card(board["board_id"],card_id,user_id); click.echo(f"Unassigned card #{card_id} from {user_id}")
         else: client.assign_card(board["board_id"],card_id,user_id); click.echo(f"Assigned card #{card_id} to {user_id}")
     except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
 
