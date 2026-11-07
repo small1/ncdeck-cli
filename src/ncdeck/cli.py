@@ -161,20 +161,34 @@ class DeckClient:
             "title": card.get('title') or '',
             "description": card.get('description') or '',
             "type": card.get('type') or 'plain',
-            "order": card.get('order') if card.get('order') is not None else 0,
+            "owner": self._owner_uid(card),
+            "order": int(card.get('order') if card.get('order') is not None else 0),
             "duedate": card.get('duedate'),
             "archived": bool(card.get('archived')),
             "done": card.get('done'),
         }
-        owner = self._owner_uid(card)
-        if owner:
-            payload["owner"] = owner
         # Normalize duedate
         if isinstance(payload.get('duedate'), str) and payload['duedate']:
             dt = _parse_duedate(payload['duedate'])
             if dt:
                 payload['duedate'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Normalize done
+        if isinstance(payload.get('done'), str) and payload['done']:
+            dt = _parse_duedate(payload['done'])
+            if dt:
+                payload['done'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         return payload
+
+    def update_card(self, board_id, card_id, **changes):
+        card = self.get_card(board_id, card_id)
+        for k, v in changes.items():
+            card[k] = v
+        payload = self._card_update_payload(card)
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
+
+    def mark_card_done(self, board_id, card_id, done=True):
+        val = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') if done else None
+        return self.update_card(board_id, card_id, done=val)
 
     def assign_card(self, board_id, card_id, user_id):
         card = self.get_card(board_id, card_id)
@@ -537,7 +551,9 @@ def done_cmd(ctx,board_key,card_id,instance,stack,archive):
         if archive: client.archive_card(board["board_id"],card_id,archived=True); click.echo(f"Archived card #{card_id}"); return
         ds=stack if stack is not None else board.get("done_stack_id")
         if ds is None: raise click.ClickException("No done stack configured")
-        client.move_card(board["board_id"],card_id,ds); click.echo(f"Marked card #{card_id} as done")
+        client.mark_card_done(board["board_id"], card_id, done=True)
+        client.move_card(board["board_id"], card_id, ds)
+        click.echo(f"Marked card #{card_id} as done")
     except Exception as e: click.echo(f"Error: {e}",err=True); sys.exit(1)
 
 @cli.command("move")
@@ -906,6 +922,7 @@ def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
                 if ds is None:
                     click.echo(click.style(f"  Skipped #{card_id} ({inst_name}/{board_key}): no done stack configured", fg='yellow'), err=True)
                     continue
+                client.mark_card_done(board['board_id'], card_id, done=True)
                 client.move_card(board['board_id'], card_id, ds)
                 click.echo(f"Done #{card_id} ({inst_name}/{board_key}) - {it['title']}")
             completed_ok.append(it)
