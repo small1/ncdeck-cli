@@ -123,6 +123,9 @@ class DeckClient:
     def archive_card(self, board_id, card_id, archived=True):
         card = self.get_card(board_id, card_id); payload=card; payload["archived"]=bool(archived)
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
+    def update_card_duedate(self, board_id, card_id, duedate):
+        card = self.get_card(board_id, card_id); payload=card; payload["duedate"]=duedate
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
     def list_labels(self, board_id):
         try:
             board=self.get_board(board_id)
@@ -778,7 +781,7 @@ def _resolve_completed_refs(refs_text, items):
 @click.option("--desc-width", default=40, show_default=True, help="Max width for short description")
 @click.pass_context
 def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
-    """List today's agenda and mark selected cards as done."""
+    """List today's agenda, mark selected cards as done, and move the rest to the next day."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
@@ -806,15 +809,14 @@ def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
     click.echo("Enter completed cards as instance:cardid or instance/board:cardid (comma/space separated).")
     click.echo("Example: kafit:20  or  kafit/personal:20")
     refs = click.prompt("Completed", default="", show_default=False)
-    if not refs.strip():
-        click.echo("No cards marked completed.")
-        return
-    resolved, errors = _resolve_completed_refs(refs, items)
-    for e in errors:
-        click.echo(click.style(f"  Warning: {e}", fg='yellow'), err=True)
-    if not resolved:
-        click.echo("No valid cards to complete.", err=True)
-        return
+    resolved = []
+    errors = []
+    if refs.strip():
+        resolved, errors = _resolve_completed_refs(refs, items)
+        for e in errors:
+            click.echo(click.style(f"  Warning: {e}", fg='yellow'), err=True)
+    completed_ok = []
+    completed_keys = set()
     for it in resolved:
         inst_name = it['instance']; board_key = it['board']; card_id = it['id']
         try:
@@ -830,8 +832,38 @@ def completed_cmd(ctx, instance, all_instances, archive, stack, desc_width):
                     continue
                 client.move_card(board['board_id'], card_id, ds)
                 click.echo(f"Done #{card_id} ({inst_name}/{board_key}) - {it['title']}")
+            completed_ok.append(it)
+            completed_keys.add((inst_name, board_key, card_id))
         except Exception as e:
             click.echo(click.style(f"  Error completing #{card_id} ({inst_name}/{board_key}): {e}", fg='red'), err=True)
+    moved = []
+    move_errors = []
+    for it in items:
+        k = (it['instance'], it['board'], it['id'])
+        if k in completed_keys:
+            continue
+        try:
+            _, inst, board = get_mapping(cfg, it['instance'], it['board'])
+            client = DeckClient(inst, debug=debug)
+            new_due = (it['due'] + timedelta(days=1)).isoformat()
+            client.update_card_duedate(board['board_id'], it['id'], new_due)
+            moved.append((it, new_due))
+            click.echo(f"Moved to next day #{it['id']} ({it['instance']}/{it['board']}) - {it['title']} -> {new_due}")
+        except Exception as e:
+            move_errors.append((it, e))
+            click.echo(click.style(f"  Error moving #{it['id']} ({it['instance']}/{it['board']}): {e}", fg='red'), err=True)
+    click.echo()
+    click.echo(click.style("Summary", bold=True))
+    click.echo(click.style("─" * 40, fg='blue'))
+    click.echo(f"  Completed: {len(completed_ok)}")
+    for it in completed_ok:
+        click.echo(f"    - #{it['id']} {it['instance']}/{it['board']}: {it['title']}")
+    click.echo(f"  Moved to next day: {len(moved)}")
+    for it, nd in moved:
+        click.echo(f"    - #{it['id']} {it['instance']}/{it['board']}: {it['title']} (due {nd[:16].replace('T',' ')})")
+    if move_errors:
+        click.echo(f"  Move errors: {len(move_errors)}")
+    click.echo()
 
 if __name__ == "__main__":
     cli()
