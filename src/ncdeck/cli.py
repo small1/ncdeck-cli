@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, json, time, webbrowser
+import os, sys, json, time, webbrowser, re
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
@@ -111,6 +111,38 @@ class DeckClient:
             return {}
     def list_boards(self): return self._get("/index.php/apps/deck/api/v1.0/boards")
     def get_board(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}")
+
+    def get_theming_color(self):
+        """Return a hex theme color from Nextcloud capabilities, or None."""
+        try:
+            url = f"{self.url}/ocs/v2.php/cloud/capabilities?format=json"
+            if self.debug: click.echo(f"[DEBUG] GET {url}", err=True)
+            r = self.session.get(url, headers={"OCS-APIREQUEST": "true", "Accept": "application/json"})
+            if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
+            if r.status_code != 200:
+                return None
+            data = r.json() or {}
+            theming = (((data.get('ocs') or {}).get('data') or {}).get('capabilities') or {}).get('theming') or {}
+            if not isinstance(theming, dict):
+                return None
+
+            def _hex(v):
+                if not isinstance(v, str): return None
+                s = v.strip()
+                if re.match(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$', s):
+                    return s
+                return None
+
+            bg = _hex(theming.get('background'))
+            if bg:
+                return bg
+            col = _hex(theming.get('color'))
+            if col:
+                return col
+            return None
+        except Exception as e:
+            if self.debug: click.echo(f"[DEBUG] theming color fetch failed: {e}", err=True)
+            return None
     def list_stacks(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks")
     def list_cards(self, board_id, stack_id=None):
         try:
@@ -404,10 +436,14 @@ def account_add_cmd(instance_name, url, theme_color):
     if not instance_name:
         default_name = login_name if login_name and login_name not in cfg['instances'] else f"nc_{login_name}"
         instance_name = click.prompt("Short name for this instance", default=default_name)
-    if theme_color is None:
-        theme_color = (click.prompt("Theme color (blank for cyan)", default="", show_default=False) or "").strip() or None
-    inst_color = _inst_color(theme_color)
     client = DeckClient({"url": server.rstrip('/'), "username": login_name, "password": app_password})
+    detected_color = None
+    if theme_color is None:
+        detected_color = client.get_theming_color()
+        prompt_default = detected_color or ""
+        prompt_label = "Theme color (from Nextcloud theme)" if detected_color else "Theme color (blank for cyan)"
+        theme_color = (click.prompt(prompt_label, default=prompt_default, show_default=bool(detected_color)) or "").strip() or None
+    inst_color = _inst_color(theme_color)
     ui_info("Discovering boards...", inst_color)
     boards = client.list_boards()
     boards_config={}
@@ -490,6 +526,49 @@ def account_delete_cmd(instance_name, force):
             cfg.pop('default_instance', None)
     save_config(cfg)
     ui_ok(f"Deleted instance '{_st(instance_name, fg=c, bold=True)}'")
+
+@cli.group("config")
+def config_group():
+    """Manage configuration."""
+    pass
+
+
+@config_group.command("color")
+@click.argument("instance_name")
+@click.argument("color_value", required=False)
+@click.option("--theme", "from_theme", is_flag=True, help="Fetch color from the instance's current Nextcloud theme")
+@click.pass_context
+def config_color_cmd(ctx, instance_name, color_value, from_theme):
+    """Set an instance color manually, or fetch it from the Nextcloud theme."""
+    debug = ctx.obj.get('debug') if ctx and ctx.obj else False
+    if from_theme and color_value:
+        raise click.ClickException("Provide either COLOR or --theme, not both")
+    if not from_theme and not color_value:
+        raise click.ClickException("Provide COLOR or use --theme")
+    cfg = load_config()
+    if not isinstance(cfg, dict) or not (cfg.get('instances') or {}).get(instance_name):
+        raise click.ClickException(f"Instance '{instance_name}' not found in config")
+    inst = cfg['instances'][instance_name]
+    ic_before = _inst_color(inst)
+    if from_theme:
+        client = DeckClient(inst, debug=debug)
+        ui_info(f"Fetching theme color from {inst.get('url','')}...", ic_before)
+        detected = client.get_theming_color()
+        if not detected:
+            raise click.ClickException("Could not detect a theme color from Nextcloud capabilities (theming may be unavailable or background is an image)")
+        color_value = detected
+    # normalize/validate; store hex/named/r,g,b as normalized string (preserve hex/named, convert rgb tuple)
+    norm = _normalize_color(color_value, default=None)
+    if norm is None:
+        raise click.ClickException(f"Invalid color: {color_value}")
+    if isinstance(norm, tuple):
+        store_val = '#%02x%02x%02x' % norm
+    else:
+        store_val = norm
+    inst['color'] = store_val
+    save_config(cfg)
+    ui_ok(f"Set color for {_st(instance_name, fg=_inst_color(inst), bold=True)} to {_st(store_val, fg=_inst_color(inst))}")
+
 
 @cli.command("show-config")
 def show_config_cmd():

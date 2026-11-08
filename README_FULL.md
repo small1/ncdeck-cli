@@ -157,12 +157,12 @@ ncdeck list --labels inbox
 
 ## Commands
 
-### `ncdeck add-account`
+### `ncdeck account add` (account wizard)
 
 Interactive wizard to add a Nextcloud account using Nextcloud Login Flow v2. Opens a browser for authentication, auto-discovers boards and stacks, lets you assign short names to boards, select done stacks, and merges into your existing config.
 
 ```text
-Usage: ncdeck add-account [OPTIONS]
+Usage: ncdeck account add [OPTIONS]
 ```
 
 #### Options
@@ -171,16 +171,32 @@ Usage: ncdeck add-account [OPTIONS]
 | --- | --- | --- | --- |
 | `-i, --instance TEXT` | `string` | `prompted` | Short name for this instance. |
 | `--url TEXT` | `string` | `prompted` | Nextcloud server URL (e.g., `https://cloud.example.com`). |
+| `--color TEXT` | `string` | `auto/prompted` | Theme color for this instance. If omitted, ncdeck tries to auto-detect it from the Nextcloud server theming (capabilities) and offers it as the default. |
 
 The wizard will:
 1. Start Login Flow v2 and open your browser for authentication
 2. Wait for you to approve the login in Nextcloud
-3. Auto-discover all boards accessible to your account
-4. For each board, ask for a short name (easy to remember)
-5. Show available stacks and ask which one to use for creating cards
-6. Ask which stack should be the "done" stack for `ncdeck done`
-7. Ask if this should be the default instance
-8. Save to your existing config (preserving other accounts)
+3. Auto-detect the server theme color (when available) and prompt for the instance color
+4. Auto-discover all boards accessible to your account
+5. For each board, ask for a short name (easy to remember)
+6. Show available stacks and ask which one to use for creating cards
+7. Ask which stack should be the "done" stack for `ncdeck done`
+8. Ask if this should be the default instance
+9. Save to your existing config (preserving other accounts)
+
+### `ncdeck config color`
+
+Set an instance’s theme color manually, or fetch it from the Nextcloud server theme.
+
+```text
+Usage: ncdeck config color [OPTIONS] INSTANCE_NAME [COLOR]
+```
+
+| Option/Arg | Description |
+| --- | --- |
+| `INSTANCE_NAME` | Configured instance name. |
+| `COLOR` | Color value (named `cyan`/`bright_red`, hex `"#8b0000"` **quoted in shell**, or `139,0,0`). Omit when using `--theme`. |
+| `--theme` | Fetch the color from the instance’s current Nextcloud theming (capabilities). Mutually exclusive with `COLOR`. |
 
 ### `ncdeck list`
 
