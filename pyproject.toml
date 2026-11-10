@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "CLI tool to create cards in Nextcloud Deck"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = {text = "GPL-3.0-only"}
 authors = [
     {name = "ncdeck"},
 ]
@@ -22,7 +22,8 @@ dependencies = [
 ncdeck = "ncdeck.main:main"
 
 [project.urls]
-Homepage = "https://github.com/example/ncdeck"
+Homepage = "https://github.com/small1/ncdeck-cli"
+Repository = "https://github.com/small1/ncdeck-cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

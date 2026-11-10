@@ -41,10 +41,14 @@ instances:
 ```bash
 # Discover boards and tags
 ncdeck list --boards
-ncdeck list --labels bugs
+ncdeck labels bugs
 
 # Create a card
 ncdeck create inbox "Fix login bug" -p "[BUG]" -t bug --due-date 2026-10-31
 ```
 
 See [README_FULL.md](README_FULL.md) for complete documentation.
+
+## License
+
+GPL-3.0-only. See [LICENSE](LICENSE).

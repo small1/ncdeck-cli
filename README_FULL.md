@@ -742,4 +742,5 @@ ncdeck done inbox 123
 **Files:**  
 - Source: `src/ncdeck/cli.py`  
 - Config: `~/.config/ncdeck/config.yaml`  
-- Example Config: `config.example.yaml`
+- Example Config: `config.example.yaml`  
+- License: `LICENSE` (GPL-3.0-only)
