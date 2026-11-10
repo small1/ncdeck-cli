@@ -1129,16 +1129,13 @@ def _comment_counter(count):
     return ' ' + _st(f'[💬 {count}]', dim=True)
 
 def _card_counter(card):
-    """Task counter if the card has a task list, otherwise comment counter."""
+    """Return task and/or comment counters for a card."""
     if not isinstance(card, dict):
         return ''
     td = card.get('_tasks_done'); tt = card.get('_tasks_total')
     if tt is None:
         td, tt = _task_list_counts(card.get('description') or '')
-    counter = _task_counter(td, tt)
-    if counter:
-        return counter
-    return _comment_counter(_card_comments_count(card))
+    return _task_counter(td, tt) + _comment_counter(_card_comments_count(card))
 
 
 
@@ -1306,9 +1303,8 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
 @click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
-@click.option("--desc-width", default=50, show_default=True, help="Max width for short description")
 @click.pass_context
-def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
+def agenda_cmd(ctx, period, instance, all_instances, all_cards):
     """Show cards by due date (today, tomorrow, week, month)."""
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
@@ -1328,12 +1324,9 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
         ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
         due_s = it['due'].strftime('%a %Y-%m-%d %H:%M')
         title = it['title']
-        desc = _short_desc(it['desc'], desc_width)
         loc = f"{it['instance']}/{it['board']} / {it['stack']}"
-        counter = _task_counter(it.get('tasks_done'), it.get('tasks_total')) or _comment_counter(it.get('comments'))
+        counter = _task_counter(it.get('tasks_done'), it.get('tasks_total')) + _comment_counter(it.get('comments'))
         click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
-        if desc:
-            ui_kv("Desc", desc, ic, label_width=10)
         ui_kv("Due", due_s, ic, label_width=10)
         ui_kv("Where", loc, ic, label_width=10)
         click.echo()

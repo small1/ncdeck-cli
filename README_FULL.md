@@ -398,7 +398,7 @@ ncdeck list --cards inbox --stack 5
 
 **Markdown task-list counters:** Cards whose descriptions contain Markdown task-list items are annotated with a `[done/total]` counter next to the card (green when every item is done). The same counter appears in `ncdeck agenda` and `ncdeck search`.
 
-**Comment counter:** Cards without a task list show `[💬 n]` when they have comments. If a card has a task list, only the task-list counter is shown.
+**Comment counter:** Cards with comments show `[💬 n]`. If a card has both a task list and comments, both counters are shown (for example `[1/3] [💬 2]`).
 
 Supported task-list syntax:
 - Bullets `- [ ]`, `* [ ]`, `+ [ ]`, or numbered items `1. [ ]`
