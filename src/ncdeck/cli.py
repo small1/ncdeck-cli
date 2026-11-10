@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""ncdeck - a terminal CLI for Nextcloud Deck.
+
+Why: keep card creation, inspection and daily planning available without a
+browser, across multiple Nextcloud instances, from one XDG config file.
+"""
+
 import os, sys, json, time, webbrowser, re, shutil, unicodedata
 from pathlib import Path
 from typing import Optional, List
@@ -6,25 +12,39 @@ from datetime import datetime, timedelta, timezone
 import click, requests, yaml
 from requests.auth import HTTPBasicAuth
 
+# ---- Configuration (XDG) ----
 CONFIG_PATHS = [Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ncdeck" / "config.yaml", Path.home() / ".ncdeck.yaml"]
 
 def get_config_path():
+    """Return the first existing config path, or the XDG default.
+    Why: one place decides where config lives so reads and writes never disagree.
+    """
     for p in CONFIG_PATHS:
         if p.exists(): return p
     p = CONFIG_PATHS[0]; p.parent.mkdir(parents=True, exist_ok=True); return p
 
 def load_config():
+    """Load the YAML config, or an empty dict when none exists yet.
+    Why: commands must work (and give friendly errors) before `account add` has run.
+    """
     for p in CONFIG_PATHS:
         if p.exists():
             with p.open() as f: return yaml.safe_load(f) or {}
     return {}
 
 def save_config(cfg):
+    """Persist config back to disk, preserving key order.
+    Why: the wizard, label cache and theme changes all need the same safe write.
+    """
     p = get_config_path(); p.parent.mkdir(parents=True, exist_ok=True)
     with p.open('w') as f: yaml.safe_dump(cfg, f, sort_keys=False)
 
+# ---- Nextcloud Deck API client ----
 class DeckClient:
     def __init__(self, instance_cfg, debug=False):
+        """Build an authenticated requests session for one Nextcloud instance.
+        Why: credentials and JSON headers are shared by every API call.
+        """
         self.url = instance_cfg["url"].rstrip("/")
         self.auth = HTTPBasicAuth(instance_cfg["username"], instance_cfg["password"])
         self.session = requests.Session()
@@ -33,6 +53,9 @@ class DeckClient:
         self.debug = debug
 
     def _log(self, method, url, **kwargs):
+        """Emit a debug line for an HTTP request.
+        Why: hidden --debug exposes traffic without cluttering normal output.
+        """
         if self.debug:
             click.echo(f"[DEBUG] {method} {url}", err=True)
             if kwargs.get('data'):
@@ -40,6 +63,9 @@ class DeckClient:
             if kwargs.get('json'):
                 click.echo(f"[DEBUG] JSON: {json.dumps(kwargs['json'])[:200]}", err=True)
     def _get(self, path):
+        """GET a Deck REST endpoint and return decoded JSON.
+        Why: uniform status checks and debug logging for all reads.
+        """
         url = f"{self.url}{path}"
         if self.debug: click.echo(f"[DEBUG] GET {url}", err=True)
         r = self.session.get(url)
@@ -48,6 +74,9 @@ class DeckClient:
         return r.json()
 
     def _post(self, path, data):
+        """POST JSON to a Deck REST endpoint.
+        Why: create/update calls need consistent encoding and error handling.
+        """
         url = f"{self.url}{path}"
         if self.debug:
             click.echo(f"[DEBUG] POST {url}", err=True)
@@ -59,6 +88,9 @@ class DeckClient:
         return r.json()
 
     def _post_file(self, path, files, data=None):
+        """POST multipart form data to a Deck endpoint.
+        Why: attachments must not inherit the session's JSON Content-Type.
+        """
         headers = dict(self.session.headers)
         headers.pop('Content-Type', None)
         headers['OCS-APIREQUEST'] = 'true'
@@ -70,6 +102,9 @@ class DeckClient:
         return r.json()
 
     def _clean_card_payload(self, data):
+        """Strip read-only fields and normalize owner/dates before a PUT.
+        Why: some Deck versions reject full card objects with HTTP 400 on update.
+        """
         if not isinstance(data, dict): return data
         payload = dict(data)
         # Remove read-only/computed fields that can cause 400 on some Deck versions
@@ -94,6 +129,9 @@ class DeckClient:
         return payload
 
     def _put(self, path, data):
+        """PUT a cleaned card payload to a REST endpoint.
+        Why: updates must avoid server-side validation errors caused by extra fields.
+        """
         url = f"{self.url}{path}"
         payload = self._clean_card_payload(data)
         if self.debug:
@@ -109,11 +147,21 @@ class DeckClient:
             return r.json()
         except Exception:
             return {}
-    def list_boards(self): return self._get("/index.php/apps/deck/api/v1.0/boards")
-    def get_board(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}")
+    def list_boards(self):
+        """List boards visible to this account.
+        Why: the account wizard needs board IDs to build short config keys.
+        """
+        return self._get("/index.php/apps/deck/api/v1.0/boards")
+    def get_board(self, board_id):
+        """Fetch one board with its labels and stacks.
+        Why: label discovery and shared-board detection use board details.
+        """
+        return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}")
 
     def get_theming_color(self):
-        """Return a hex theme color from Nextcloud capabilities, or None."""
+        """Read the Nextcloud theme color from capabilities.
+        Why: auto-detect a per-instance output color during `account add`.
+        """
         try:
             url = f"{self.url}/ocs/v2.php/cloud/capabilities?format=json"
             if self.debug: click.echo(f"[DEBUG] GET {url}", err=True)
@@ -127,6 +175,9 @@ class DeckClient:
                 return None
 
             def _hex(v):
+                """Validate and return a hex color string.
+                Why: theming capabilities may return arbitrary values; only real hex is usable.
+                """
                 if not isinstance(v, str): return None
                 s = v.strip()
                 if re.match(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$', s):
@@ -143,8 +194,15 @@ class DeckClient:
         except Exception as e:
             if self.debug: click.echo(f"[DEBUG] theming color fetch failed: {e}", err=True)
             return None
-    def list_stacks(self, board_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks")
+    def list_stacks(self, board_id):
+        """List the stacks of a board.
+        Why: card listing and wizard stack selection need stack IDs and titles.
+        """
+        return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks")
     def list_cards(self, board_id, stack_id=None):
+        """Return a board's cards annotated with stack info and task counts.
+        Why: Deck exposes cards differently across versions, so both shapes are tried.
+        """
         try:
             stacks = self.list_stacks(board_id); cards = []
             for stack in stacks:
@@ -154,6 +212,7 @@ class DeckClient:
                 cards.extend(sc)
             if cards: return _annotate_task_counts(cards)
         except: pass
+        # Older Deck versions expose cards nested under the board instead of stacks.
         try:
             board = self.get_board(board_id)
             if board and board.get('stacks'):
@@ -166,20 +225,33 @@ class DeckClient:
                 return _annotate_task_counts(cards)
         except: pass
         return []
-    def get_card(self, board_id, card_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}")
+    def get_card(self, board_id, card_id):
+        """Fetch one card through the '-1' stack endpoint.
+        Why: Deck permits card lookup without knowing its current stack.
+        """
+        return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}")
     def get_card_full(self, board_id, card_id):
+        """Fetch a card, falling back to a full board scan.
+        Why: some instances reject the direct card endpoint.
+        """
         try: return self.get_card(board_id, card_id)
         except:
             for c in self.list_cards(board_id):
                 if c.get('id')==int(card_id): return c
             raise
     def _owner_uid(self, card):
+        """Extract an owner UID from either a string or a Deck object.
+        Why: update payloads require a plain owner string.
+        """
         o = card.get('owner')
         if isinstance(o, str): return o
         if isinstance(o, dict): return o.get('uid') or o.get('primaryKey') or ''
         return ''
 
     def _put_ocs(self, path, data):
+        """PUT to an OCS endpoint with OCS headers and format=json.
+        Why: reorder and other newer Deck APIs only exist under OCS.
+        """
         url = f"{self.url}{path}"
         if '?' in url:
             url += '&format=json'
@@ -207,11 +279,17 @@ class DeckClient:
         return j
 
     def _ocs_data(self, j):
+        """Unwrap the `ocs.data` envelope from an OCS response.
+        Why: callers want the payload, not OCS metadata.
+        """
         if isinstance(j, dict) and 'ocs' in j:
             return (j.get('ocs') or {}).get('data')
         return j
 
     def _ocs_get(self, path, params=None):
+        """GET an OCS endpoint with format=json.
+        Why: the comments API is OCS-only.
+        """
         url = f"{self.url}{path}"
         if '?' in url:
             url += '&format=json'
@@ -235,6 +313,9 @@ class DeckClient:
         return self._ocs_data(j)
 
     def _post_ocs(self, path, data):
+        """POST JSON to an OCS endpoint.
+        Why: comments and label assignment use OCS routes.
+        """
         url = f"{self.url}{path}"
         if '?' in url:
             url += '&format=json'
@@ -260,16 +341,25 @@ class DeckClient:
         return self._ocs_data(j)
 
     def list_comments(self, card_id, limit=50, offset=0):
+        """List a card's comments.
+        Why: `show` needs comment bodies and reply metadata.
+        """
         return self._ocs_get(
             f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments",
             params={'limit': int(limit), 'offset': int(offset)},
         ) or []
 
     def add_comment(self, card_id, message, parent_id=None):
+        """Add a comment, optionally as a reply.
+        Why: the `comment` command maps to Deck's OCS comments API.
+        """
         payload = {"message": message, "parentId": parent_id}
         return self._post_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments", payload)
 
     def reorder_card(self, board_id, card_id, target_stack_id, order=0):
+        """Move a card via the OCS reorder endpoint with a full payload.
+        Why: a plain PUT fails on some instances; the web UI uses reorder.
+        """
         # Use OCS reorder endpoint (matches Deck web UI behavior) with full card payload
         card = self.get_card(board_id, card_id)
         payload = dict(card)
@@ -279,9 +369,15 @@ class DeckClient:
         return self._put_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/reorder", payload)
 
     def move_card(self, board_id, card_id, stack_id):
+        """Move a card to the top of a target stack.
+        Why: `done` and `move` share the same underlying behavior.
+        """
         return self.reorder_card(board_id, card_id, stack_id, order=0)
 
     def _card_update_payload(self, card):
+        """Build a minimal, normalized PUT payload from a card.
+        Why: sending only writable fields avoids 400 errors and data loss.
+        """
         payload = {
             "title": card.get('title') or '',
             "description": card.get('description') or '',
@@ -305,6 +401,9 @@ class DeckClient:
         return payload
 
     def update_card(self, board_id, card_id, **changes):
+        """Apply changes to a card using GET-modify-PUT.
+        Why: Deck has no PATCH, so descriptions/due/done need a safe full payload.
+        """
         card = self.get_card(board_id, card_id)
         for k, v in changes.items():
             card[k] = v
@@ -312,23 +411,38 @@ class DeckClient:
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
 
     def mark_card_done(self, board_id, card_id, done=True):
+        """Set or clear the done timestamp in UTC.
+        Why: Deck stores 'done' as a timestamp rather than a boolean.
+        """
         val = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') if done else None
         return self.update_card(board_id, card_id, done=val)
 
     def assign_card(self, board_id, card_id, user_id):
+        """Assign a user to a card.
+        Why: assignment is a separate endpoint from card creation.
+        """
         card = self.get_card(board_id, card_id)
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/assignUser", {"userId": user_id})
 
     def unassign_card(self, board_id, card_id, user_id):
+        """Unassign a user from a card.
+        Why: mirrors assign via the unassignUser endpoint.
+        """
         card = self.get_card(board_id, card_id)
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/unassignUser", {"userId": user_id})
 
     def archive_card(self, board_id, card_id, archived=True):
+        """Archive or unarchive a card.
+        Why: `done --archive` and bulk archive need a reversible flag.
+        """
         card = self.get_card(board_id, card_id)
         ep = 'archive' if archived else 'unarchive'
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/{ep}", {})
 
     def update_card_duedate(self, board_id, card_id, duedate):
+        """Update only a card's due date.
+        Why: `completed` pushes unfinished cards to the next day.
+        """
         card = self.get_card(board_id, card_id)
         payload = self._card_update_payload(card)
         # normalize input duedate
@@ -342,6 +456,9 @@ class DeckClient:
             payload['duedate'] = duedate
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}", payload)
     def list_labels(self, board_id):
+        """Fetch board labels via board details, then v1.0/v1.1 endpoints.
+        Why: Deck versions disagree on the labels route.
+        """
         try:
             board=self.get_board(board_id)
             if isinstance(board,dict) and board.get('labels'): return board['labels']
@@ -351,10 +468,14 @@ class DeckClient:
             try: return self._get(f"/index.php/apps/deck/api/v1.1/boards/{board_id}/labels")
             except: raise
     def create_card(self, board_id, stack_id, title, description="", duedate=None, labels=None, assigned_users=None):
+        """Create a card, then apply labels and assignees with follow-up calls.
+        Why: the create payload alone does not reliably persist labels across versions.
+        """
         payload={"title":title,"description":description,"type":"plain","order":999}
         if duedate: payload["duedate"]=duedate
         card = self._post(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards", payload)
         card_id = card.get('id'); card_stack = card.get('stackId') or stack_id
+        # The create endpoint does not reliably persist labels, so assign each ID explicitly.
         for lid in labels or []:
             lid = int(lid)
             try:
@@ -375,6 +496,9 @@ class DeckClient:
         return card
 
     def upload_attachment(self, board_id, card_id, file_path):
+        """Upload a file with curl multipart, trying type=file then deck_file.
+        Why: Deck's attachment API rejected requests' multipart handling in practice.
+        """
         p = Path(file_path)
         card = None
         try:
@@ -424,7 +548,11 @@ class DeckClient:
         
         raise Exception("Failed to upload attachment")
 
+# ---- Shared config and input helpers ----
 def get_mapping(cfg, instance_name: Optional[str], board_key: str):
+    """Resolve instance and board config for a short board key.
+    Why: every command uses the same lookup and friendly error messages.
+    """
     inst_name = instance_name or cfg.get("default_instance")
     if not inst_name: raise click.ClickException("No instance specified and no default_instance in config")
     try: inst = cfg["instances"][inst_name]
@@ -434,6 +562,9 @@ def get_mapping(cfg, instance_name: Optional[str], board_key: str):
     return inst_name, inst, board
 
 def read_description(description: str, description_file: Optional[Path]) -> str:
+    """Read a description from a file, inline text, or piped stdin.
+    Why: long Markdown and automation should not require shell quoting.
+    """
     if description_file:
         with description_file.open("r", encoding="utf-8") as f: return f.read()
     if not sys.stdin.isatty():
@@ -443,7 +574,9 @@ def read_description(description: str, description_file: Optional[Path]) -> str:
     return description
 
 def _normalize_labels(labels):
-    """Store only the label fields ncdeck needs, preserving Deck's color."""
+    """Reduce Deck labels to id/title/color for storage.
+    Why: cache only what is needed so config stays small and stable.
+    """
     out=[]
     for label in labels or []:
         if not isinstance(label, dict): continue
@@ -459,7 +592,9 @@ def _normalize_labels(labels):
     return out
 
 def _board_labels(board, client=None, cfg=None, inst_name=None, board_key=None, refresh=False):
-    """Return cached labels for a board, discovering and saving them if needed."""
+    """Return cached labels, discovering and saving them once if missing.
+    Why: avoid a network label lookup on every create or label listing.
+    """
     if not isinstance(board, dict):
         return []
     cached = board.get('labels')
@@ -475,6 +610,9 @@ def _board_labels(board, client=None, cfg=None, inst_name=None, board_key=None, 
     return labels
 
 def resolve_label_ids(client: DeckClient, board: dict, tag_names: List[str], cfg=None, inst_name=None, board_key=None) -> List[int]:
+    """Map tag names to cached label IDs, case-insensitively.
+    Why: `-t` accepts human names while the API needs numeric IDs.
+    """
     if not tag_names: return []
     labels = _board_labels(board, client=client, cfg=cfg, inst_name=inst_name, board_key=board_key)
     label_map={}
@@ -490,28 +628,35 @@ def resolve_label_ids(client: DeckClient, board: dict, tag_names: List[str], cfg
     if missing: raise click.ClickException(f"Unknown tag(s): {', '.join(missing)}")
     return resolved
 
-@click.group()
+# ---- CLI root, account and config commands ----
+@click.group(help="Create Nextcloud Deck cards from the CLI.")
 @click.version_option(version="0.2.0", prog_name="ncdeck")
 @click.option('--debug', is_flag=True, hidden=True, help='Enable debug output')
 @click.pass_context
 def cli(ctx, debug):
-    """Create Nextcloud Deck cards from the CLI."""
+    """Root Click group; stores the hidden --debug flag on the context.
+    Why: one entry point shares debug state with every subcommand.
+    """
     ctx.ensure_object(dict)
     ctx.obj['debug'] = debug
 
 
-@cli.group()
+@cli.group(help="Manage Nextcloud accounts.")
 def account():
-    """Manage Nextcloud accounts."""
+    """Group for account management commands.
+    Why: keeps add/list/delete under a clear namespace.
+    """
     pass
 
 
-@account.command("add")
+@account.command("add", help="Add a Nextcloud account via Login Flow v2 with board autodiscovery.")
 @click.option("-i", "--instance", "instance_name", help="Short name for this instance")
 @click.option("--url", help="Nextcloud server URL")
 @click.option("--color", "theme_color", help="Theme color for this instance (e.g. cyan, blue, magenta, green, yellow)")
 def account_add_cmd(instance_name, url, theme_color):
-    """Add a Nextcloud account via Login Flow v2 with board autodiscovery."""
+    """Run Login Flow v2 and auto-discover boards into config.
+    Why: primary/easiest onboarding - no manual IDs or app passwords to paste.
+    """
     cfg = load_config()
     if not isinstance(cfg, dict): cfg = {}
     if 'instances' not in cfg or not isinstance(cfg['instances'], dict): cfg['instances'] = {}
@@ -590,10 +735,12 @@ def account_add_cmd(instance_name, url, theme_color):
     ui_ok(f"Configuration saved to {get_config_path()}")
     ui_kv("Instance", f"{instance_name} ({len(boards_config)} board(s))", inst_color)
 
-@account.command("list")
+@account.command("list", help="List configured accounts/instances.")
 @click.pass_context
 def account_list_cmd(ctx):
-    """List configured accounts/instances."""
+    """Show configured instances and their board shortcuts.
+    Why: quick overview of everything ncdeck can target.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
@@ -610,11 +757,13 @@ def account_list_cmd(ctx):
             click.echo(f"    {_st('•', fg=c)} {_st(bk, fg=c)}  board={bv.get('board_id')} stack={bv.get('stack_id')}{done}")
 
 
-@account.command("delete")
+@account.command("delete", help="Delete a configured account.")
 @click.argument("instance_name")
 @click.option("-f", "--force", is_flag=True, help="Force deletion without confirmation")
 def account_delete_cmd(instance_name, force):
-    """Delete a configured account."""
+    """Remove an instance and repair default_instance.
+    Why: config must stay valid when the default account is deleted.
+    """
     cfg = load_config()
     if not isinstance(cfg, dict):
         raise click.ClickException("No configuration found")
@@ -636,19 +785,23 @@ def account_delete_cmd(instance_name, force):
     save_config(cfg)
     ui_ok(f"Deleted instance '{_st(instance_name, fg=c, bold=True)}'")
 
-@cli.group("config")
+@cli.group("config", help="Manage configuration.")
 def config_group():
-    """Manage configuration."""
+    """Group for configuration commands.
+    Why: namespace for config tweaks such as color.
+    """
     pass
 
 
-@config_group.command("color")
+@config_group.command("color", help="Set an instance color manually, or fetch it from the Nextcloud theme.")
 @click.argument("instance_name")
 @click.argument("color_value", required=False)
 @click.option("--theme", "from_theme", is_flag=True, help="Fetch color from the instance's current Nextcloud theme")
 @click.pass_context
 def config_color_cmd(ctx, instance_name, color_value, from_theme):
-    """Set an instance color manually, or fetch it from the Nextcloud theme."""
+    """Set an instance color manually or from the Nextcloud theme.
+    Why: per-instance output decoration is user-configurable.
+    """
     debug = ctx.obj.get('debug') if ctx and ctx.obj else False
     if from_theme and color_value:
         raise click.ClickException("Provide either COLOR or --theme, not both")
@@ -679,9 +832,11 @@ def config_color_cmd(ctx, instance_name, color_value, from_theme):
     ui_ok(f"Set color for {_st(instance_name, fg=_inst_color(inst), bold=True)} to {_st(store_val, fg=_inst_color(inst))}")
 
 
-@cli.command("show-config")
+@cli.command("show-config", help="Show current configuration with passwords masked.")
 def show_config_cmd():
-    """Show current configuration with passwords masked."""
+    """Dump config with passwords masked.
+    Why: lets users inspect or share their config safely.
+    """
     cfg = load_config()
     if not isinstance(cfg, dict): ui_warn("No configuration found."); return
     masked = json.loads(json.dumps(cfg))
@@ -691,7 +846,8 @@ def show_config_cmd():
     ui_header(f"Configuration: {get_config_path()}", 'cyan')
     click.echo(yaml.safe_dump(masked, sort_keys=False))
 
-@cli.command("list")
+# ---- Discovery and card commands ----
+@cli.command("list", help="List configured boards/stacks/labels/cards or instance details.")
 @click.option("-i","--instance")
 @click.option("--boards",is_flag=True)
 @click.option("--stacks",type=int)
@@ -701,7 +857,9 @@ def show_config_cmd():
 @click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.pass_context
 def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards):
-    """List configured boards/stacks/labels/cards or instance details."""
+    """List boards, stacks, labels, cards, or instance details.
+    Why: one discovery command for IDs and at-a-glance card overviews.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name=instance or cfg.get("default_instance")
     if not inst_name: raise click.ClickException("No instance specified")
@@ -771,13 +929,15 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
         di=f" done_stack={v['done_stack_id']}" if v.get("done_stack_id") else ""
         click.echo(f"  {_st('•', fg=ic)} {_st(k, fg=ic, bold=True)}  board={v['board_id']} stack={v['stack_id']}{_st(di, dim=True)}")
 
-@cli.command("labels")
+@cli.command("labels", help="List labels configured for a board (cached from account setup).")
 @click.argument("board_key")
 @click.option("-i","--instance")
 @click.option("--refresh", is_flag=True, help="Fetch labels from the server and save them to config")
 @click.pass_context
 def labels_cmd(ctx, board_key, instance, refresh):
-    """List labels configured for a board (cached from account setup)."""
+    """Show cached labels for a board, optionally refreshing them.
+    Why: labels change in the web UI, so the cache needs a refresh path.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key)
     ic=_inst_color(inst)
@@ -801,7 +961,7 @@ def labels_cmd(ctx, board_key, instance, refresh):
     elif not had_cache:
         ui_dim(f"  Discovered and saved {len(labels)} label(s) in config.")
 
-@cli.command("create")
+@cli.command("create", help="Create a new card on a board.")
 @click.argument("board_key")
 @click.argument("title")
 @click.option("-d","--description",default="")
@@ -814,7 +974,9 @@ def labels_cmd(ctx, board_key, instance, refresh):
 @click.option("-i","--instance")
 @click.pass_context
 def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
-    """Create a new card on a board."""
+    """CLI wrapper that assembles a new card.
+    Why: combines prefix, description, tags, due date, assignees and attachments.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ic=_inst_color(inst)
@@ -836,7 +998,7 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
                 ui_warn(f"Failed to attach {Path(a).name}: {e}")
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
-@cli.command("description")
+@cli.command("description", help="Set or amend a card's description.")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.argument("text",required=False)
@@ -845,7 +1007,9 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
 @click.option("-i","--instance")
 @click.pass_context
 def description_cmd(ctx,board_key,card_id,text,description_file,amend,instance):
-    """Set or amend a card's description."""
+    """Replace or amend a card's description.
+    Why: `--amend` appends without discarding existing task lists or notes.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     if text is not None and description_file:
         raise click.ClickException("Provide either TEXT or --file, not both")
@@ -878,7 +1042,7 @@ def description_cmd(ctx,board_key,card_id,text,description_file,amend,instance):
         ui_kv("Preview", _short_desc(new_desc, 100), ic)
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
-@cli.command("done")
+@cli.command("done", help="Mark a card as done and move it to the done stack (or archive it).")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.option("-i","--instance")
@@ -886,7 +1050,9 @@ def description_cmd(ctx,board_key,card_id,text,description_file,amend,instance):
 @click.option("--archive",is_flag=True)
 @click.pass_context
 def done_cmd(ctx,board_key,card_id,instance,stack,archive):
-    """Mark a card as done and move it to the done stack (or archive it)."""
+    """Mark a card done and move it to the done stack (or archive).
+    Why: one command covers the common completion workflow.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ic=_inst_color(inst)
@@ -902,14 +1068,16 @@ def done_cmd(ctx,board_key,card_id,instance,stack,archive):
         ui_ok(f"Marked card {_st('#'+str(card_id), fg=ic, bold=True)} as done ({_st(f'{inst_name}/{board_key}', fg=ic)})")
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
-@cli.command("move")
+@cli.command("move", help="Move a card to a different stack.")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.argument("stack_id",type=int)
 @click.option("-i","--instance")
 @click.pass_context
 def move_cmd(ctx,board_key,card_id,stack_id,instance):
-    """Move a card to a different stack."""
+    """Move a card to a different stack.
+    Why: explicit stack changes outside the done workflow.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ic=_inst_color(inst)
@@ -918,7 +1086,7 @@ def move_cmd(ctx,board_key,card_id,stack_id,instance):
         ui_ok(f"Moved card {_st('#'+str(card_id), fg=ic, bold=True)} to stack {_st(str(stack_id), fg=ic)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
-@cli.command("assign")
+@cli.command("assign", help="Assign or unassign a user to/from a card.")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.argument("user_id")
@@ -926,7 +1094,9 @@ def move_cmd(ctx,board_key,card_id,stack_id,instance):
 @click.option("--unassign",is_flag=True)
 @click.pass_context
 def assign_cmd(ctx,board_key,card_id,user_id,instance,unassign):
-    """Assign or unassign a user to/from a card."""
+    """Assign or unassign a user on a card.
+    Why: manage assignees after creation.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ic=_inst_color(inst)
@@ -940,14 +1110,16 @@ def assign_cmd(ctx,board_key,card_id,user_id,instance,unassign):
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
 
-@cli.command("attach")
+@cli.command("attach", help="Attach a file to an existing card.")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.argument("file_path",type=click.Path(exists=True,path_type=Path))
 @click.option("-i","--instance")
 @click.pass_context
 def attach_cmd(ctx,board_key,card_id,file_path,instance):
-    """Attach a file to an existing card."""
+    """Attach a file to an existing card.
+    Why: complements create's --attach for later uploads.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ic=_inst_color(inst)
@@ -956,7 +1128,7 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
         ui_ok(f"Attached {_st(file_path.name, bold=True)} to {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
-@cli.command("comment")
+@cli.command("comment", help="Add a comment to a card. Use '-' as MESSAGE to read from stdin.")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.argument("message")
@@ -964,7 +1136,9 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
 @click.option("--parent",type=int,help="ID of the comment to reply to")
 @click.pass_context
 def comment_cmd(ctx,board_key,card_id,message,instance,parent):
-    """Add a comment to a card. Use '-' as MESSAGE to read from stdin."""
+    """Add a comment, optionally from stdin or as a reply.
+    Why: keep discussions attached to the card in Deck.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     if message == '-':
         message = sys.stdin.read()
@@ -988,7 +1162,7 @@ def comment_cmd(ctx,board_key,card_id,message,instance,parent):
         ui_dim(f"  {_short_desc(message, 100)}")
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
-@cli.command("search")
+@cli.command("search", help="Search cards by keyword in title or description.")
 @click.argument("board_key")
 @click.argument("query")
 @click.option("-i","--instance")
@@ -997,7 +1171,9 @@ def comment_cmd(ctx,board_key,card_id,message,instance,parent):
 @click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.pass_context
 def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
-    """Search cards by keyword in title or description."""
+    """Search card titles and descriptions by keyword.
+    Why: find a card without listing an entire board.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     cards=client.list_cards(board["board_id"],stack_id=stack)
@@ -1025,15 +1201,24 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
         click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr}{counter} {t}{(' '+lstr) if lstr else ''}")
         if c.get('duedate'): ui_kv("Due", _st(_fmt_ts(c['duedate']), fg='red', bold=True) if is_overdue else _fmt_ts(c['duedate']), ic, label_width=10)
 
+# ---- Lightweight Markdown renderer (no external deps) ----
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
 def _char_width(ch):
+    """Return a character's terminal cell width.
+    Why: ANSI-aware wrapping must account for wide and emoji glyphs.
+    """
     return 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
 
 def _ansi_wrap(styled, width, indent='  '):
-    """Wrap ANSI-styled text to width, prefixing every physical line."""
+    """Wrap ANSI-styled text to a width, indenting every line.
+    Why: escape sequences must not be counted as visible columns.
+    """
     out, buf, visible = [], [], 0
     def flush():
+        """Emit the currently buffered wrapped line.
+        Why: shared by the ANSI wrapper's escape-scanning and trailing-text loops.
+        """
         nonlocal buf, visible
         out.append(indent + ''.join(buf))
         buf, visible = [], 0
@@ -1062,9 +1247,14 @@ def _ansi_wrap(styled, width, indent='  '):
     return '\n'.join(out)
 
 def _inline_md(text, ic):
-    """Convert inline Markdown to ANSI styles without external deps."""
+    """Convert inline Markdown to ANSI styles without dependencies.
+    Why: code spans are stashed so later rules cannot re-parse styled text.
+    """
     stash = {}
     def hold(styled):
+        """Stash a styled fragment behind a placeholder token.
+        Why: protects already-styled text from subsequent inline regexes.
+        """
         key = f'\x00{len(stash)}\x00'
         stash[key] = styled
         return key
@@ -1083,7 +1273,9 @@ def _inline_md(text, ic):
     return text
 
 def _render_markdown(text, ic, indent='  '):
-    """Render a useful subset of Markdown to ANSI text for the terminal."""
+    """Render a useful Markdown subset for terminal display.
+    Why: `show` is readable on a TTY while piped output stays raw for scripts.
+    """
     if not text or not str(text).strip():
         return indent + click.style('(empty)', dim=True)
     try:
@@ -1153,14 +1345,16 @@ def _render_markdown(text, ic, indent='  '):
             out.append(_ansi_wrap(click.style('    ' + cl, dim=True), width, indent))
     return '\n'.join(out)
 
-@cli.command("show")
+@cli.command("show", help="Show full details for a card.")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.option("-i","--instance")
 @click.option("--raw","raw_output",is_flag=True,help="Show raw Markdown source instead of rendering it")
 @click.pass_context
 def show_cmd(ctx,board_key,card_id,instance,raw_output):
-    """Show full details for a card."""
+    """Show full card details with rendered description and comments.
+    Why: one place to inspect status, labels, dependencies and discussion.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     render_md = bool(sys.stdout.isatty()) and not raw_output
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
@@ -1263,7 +1457,11 @@ def show_cmd(ctx,board_key,card_id,instance,raw_output):
                 click.echo(f"  {_st('#'+str(did), fg=ic, bold=True)} {_st('(not found on this board)', dim=True)}")
     ui_sep(ic)
 
+# ---- Date parsing, formatting and ranges ----
 def _fmt_ts(v):
+    """Format timestamps or ISO dates as local 24-hour strings.
+    Why: consistent human-readable times across every command.
+    """
     if v is None or v == '': return 'None'
     # Unix timestamp (seconds)
     try:
@@ -1284,6 +1482,9 @@ def _fmt_ts(v):
     return str(v)
 
 def _parse_duedate(s):
+    """Parse Deck/ISO date strings into timezone-aware datetimes.
+    Why: the API returns several formats; comparisons need one reliable type.
+    """
     if not s: return None
     s = str(s).strip()
     try:
@@ -1308,6 +1509,9 @@ def _parse_duedate(s):
     return None
 
 def _normalize_create_duedate(s):
+    """Normalize user due-date input (today/tomorrow/date-only) to ISO.
+    Why: CLI ergonomics while still storing a valid API value.
+    """
     if not s: return None
     raw = str(s).strip()
     low = raw.lower()
@@ -1345,6 +1549,9 @@ def _normalize_create_duedate(s):
     return raw
 
 def _agenda_range(period):
+    """Compute the start/end datetimes for an agenda period.
+    Why: today/tomorrow/week/month share the same boundary logic.
+    """
     now = datetime.now().astimezone()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     p = (period or 'today').lower()
@@ -1362,6 +1569,9 @@ def _agenda_range(period):
     return start, end, p
 
 def _short_desc(text, width=50):
+    """Collapse a description into one truncated line.
+    Why: previews and the completed prompt need compact text.
+    """
     if not text: return ''
     t = ' '.join(str(text).replace('\r',' ').replace('\n',' ').split())
     if len(t) <= width: return t
@@ -1372,7 +1582,9 @@ def _short_desc(text, width=50):
 _TASK_ITEM_RE = re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\](?=\s|$)', re.MULTILINE)
 
 def _task_list_counts(text):
-    """Return (done, total) markdown task-list items in a description."""
+    """Count done/total Markdown task items in a description.
+    Why: descriptions double as checklists; counters surface progress.
+    """
     if not text:
         return (0, 0)
     done = 0
@@ -1384,7 +1596,9 @@ def _task_list_counts(text):
     return done, total
 
 def _annotate_task_counts(cards):
-    """Attach _tasks_done/_tasks_total to each card based on its description."""
+    """Attach task counts to a list of cards.
+    Why: parse each description once instead of at every rendering site.
+    """
     for c in cards:
         if isinstance(c, dict):
             d, t = _task_list_counts(c.get('description') or '')
@@ -1393,7 +1607,9 @@ def _annotate_task_counts(cards):
     return cards
 
 def _task_counter(done, total):
-    """Return a colored '[done/total]' suffix, or '' when there are no tasks."""
+    """Render the [done/total] chip, green when complete.
+    Why: draws attention to finished checklists in listings.
+    """
     try:
         done = int(done or 0)
         total = int(total or 0)
@@ -1405,7 +1621,9 @@ def _task_counter(done, total):
     return ' ' + _st(f'[{done}/{total}]', fg=color, bold=(done >= total))
 
 def _card_comments_count(card):
-    """Return the card's comment count from common Deck field names."""
+    """Read a card's comment count from common Deck field names.
+    Why: field name and casing vary across Deck versions.
+    """
     if not isinstance(card, dict):
         return 0
     for k in ('commentsCount', 'commentscount'):
@@ -1419,7 +1637,9 @@ def _card_comments_count(card):
     return 0
 
 def _card_dependent_ids(card):
-    """Return the IDs of cards that depend on this card (Deck dependentCards)."""
+    """Extract IDs of cards that depend on this card.
+    Why: Deck 1.18+ dependencies should be visible in listings and show.
+    """
     if not isinstance(card, dict):
         return []
     raw = card.get('dependentCards')
@@ -1442,7 +1662,9 @@ def _card_dependent_ids(card):
     return ids
 
 def _dependency_counter(ids):
-    """Return a '[🔗 #1, #2]' suffix, or '' when there are no dependents."""
+    """Render a capped [🔗 #id, ...] chip.
+    Why: a compact hint without flooding narrow terminals.
+    """
     ids = ids or []
     if not ids:
         return ''
@@ -1453,7 +1675,9 @@ def _dependency_counter(ids):
     return ' ' + _st(f'[🔗 {refs}]', dim=True)
 
 def _label_color(label):
-    """Return the label's Deck color as an ANSI/truecolor value, or None."""
+    """Convert a Deck label color to an ANSI/truecolor value.
+    Why: labels should use their own colors, not just the instance color.
+    """
     if not isinstance(label, dict):
         return None
     c = label.get('color')
@@ -1467,7 +1691,9 @@ def _label_color(label):
     return _normalize_color(c, default=None)
 
 def _label_chips(labels, fallback_color='cyan'):
-    """Render labels as colored '[title]' chips."""
+    """Render labels as colored [Title] chips.
+    Why: fast visual scanning of labels in list/agenda/search/show.
+    """
     chips = []
     for label in labels or []:
         if not isinstance(label, dict):
@@ -1480,7 +1706,9 @@ def _label_chips(labels, fallback_color='cyan'):
     return ' '.join(chips)
 
 def _comment_counter(count):
-    """Return a '[💬 n]' suffix, or '' when the card has no comments."""
+    """Render the [💬 n] chip.
+    Why: show discussion activity without opening the card.
+    """
     try:
         count = int(count or 0)
     except Exception:
@@ -1490,7 +1718,9 @@ def _comment_counter(count):
     return ' ' + _st(f'[💬 {count}]', dim=True)
 
 def _card_counter(card):
-    """Return task, comment, and dependency counters for a card."""
+    """Combine task, comment and dependency counters.
+    Why: one suffix keeps every card line consistent.
+    """
     if not isinstance(card, dict):
         return ''
     td = card.get('_tasks_done'); tt = card.get('_tasks_total')
@@ -1504,6 +1734,9 @@ def _card_counter(card):
 
 # ---- UI / theming ----
 def _normalize_color(c, default='cyan'):
+    """Normalize named, hex and RGB colors to click-compatible values.
+    Why: config accepts several color formats from users and Nextcloud.
+    """
     if c is None or c == '':
         return default
     # RGB list/tuple from config: [139, 0, 0] or (139,0,0)
@@ -1538,6 +1771,9 @@ def _normalize_color(c, default='cyan'):
     return default
 
 def _inst_color(inst=None, cfg=None, inst_name=None, default='cyan'):
+    """Resolve the output color for an instance.
+    Why: decorations stay consistent per instance across all commands.
+    """
     if isinstance(inst, str) and inst not in ('',):
         # allow passing color directly (named/hex/rgb string)
         return _normalize_color(inst, default)
@@ -1555,34 +1791,73 @@ def _inst_color(inst=None, cfg=None, inst_name=None, default='cyan'):
     return default
 
 def _st(text, fg=None, bold=False, dim=False):
+    """Style text, degrading gracefully to plain text.
+    Why: a single wrapper means color never crashes output.
+    """
     try:
         return click.style(str(text), fg=fg, bold=bold, dim=dim)
     except Exception:
         return str(text)
 
 def ui_header(title, color='cyan'):
+    """Print a titled, underlined section header.
+    Why: uniform framing for every command's output.
+    """
     line = '─' * min(max(len(str(title)), 40), 100)
     click.echo()
     click.echo(_st(title, fg=color, bold=True))
     click.echo(_st(line, fg=color))
 
 def ui_kv(label, value, color='cyan', label_width=12):
+    """Print an aligned label/value line.
+    Why: readable key/value details in show and list.
+    """
     lab = f"{label}:".ljust(label_width)
     click.echo(f"  {_st(lab, fg=color)} {value}")
 
-def ui_ok(msg): click.echo(_st(f"✔ {msg}", fg='green'))
-def ui_warn(msg): click.echo(_st(f"⚠ {msg}", fg='yellow'), err=True)
-def ui_err(msg): click.echo(_st(f"✖ {msg}", fg='red'), err=True)
-def ui_info(msg, color='cyan'): click.echo(_st(msg, fg=color))
-def ui_dim(msg): click.echo(_st(msg, dim=True))
-def ui_sep(color='cyan', width=60): click.echo(_st('─' * width, fg=color))
+def ui_ok(msg):
+    """Print a green success line.
+    Why: consistent success feedback.
+    """
+    click.echo(_st(f"✔ {msg}", fg='green'))
+def ui_warn(msg):
+    """Print a yellow warning to stderr.
+    Why: non-fatal issues should not look like success.
+    """
+    click.echo(_st(f"⚠ {msg}", fg='yellow'), err=True)
+def ui_err(msg):
+    """Print a red error to stderr.
+    Why: a clear, unmistakable failure signal.
+    """
+    click.echo(_st(f"✖ {msg}", fg='red'), err=True)
+def ui_info(msg, color='cyan'):
+    """Print a colored informational line.
+    Why: progress messages during the wizard and theme fetch.
+    """
+    click.echo(_st(msg, fg=color))
+def ui_dim(msg):
+    """Print dimmed secondary text.
+    Why: de-emphasize metadata and empty states.
+    """
+    click.echo(_st(msg, dim=True))
+def ui_sep(color='cyan', width=60):
+    """Print a horizontal separator.
+    Why: visually group sections of output.
+    """
+    click.echo(_st('─' * width, fg=color))
 def ui_card_ref(card_id, title=None, color='cyan'):
+    """Format a card reference (#id, with optional title).
+    Why: consistent card references in messages.
+    """
     ref = _st(f"#{card_id}", fg=color, bold=True)
     if title is not None:
         return f"{ref} {title}"
     return ref
 
 def _card_assigned_to(card, username):
+    """Check whether a card is assigned to a given user.
+    Why: shared boards default to showing only the current user's cards.
+    """
     if not username: return False
     u = str(username).lower()
     for a in (card.get('assignedUsers') or card.get('assignedusers') or []):
@@ -1594,6 +1869,9 @@ def _card_assigned_to(card, username):
     return False
 
 def _board_is_shared(client, board_id, username):
+    """Detect boards owned by another user.
+    Why: avoid listing teammates' cards unless --all is given.
+    """
     try:
         b = client.get_board(board_id)
         owner = b.get('owner') or {}
@@ -1607,8 +1885,11 @@ def _board_is_shared(client, board_id, username):
         pass
     return False
 
+# ---- Card status, filtering and agenda helpers ----
 def _card_is_done(card, board=None):
-    """Return True when a card is done (done timestamp or in the done stack)."""
+    """Detect done cards via timestamp or the configured done stack.
+    Why: done-stack cards can legitimately have done=null.
+    """
     if not isinstance(card, dict):
         return False
     if card.get('done'):
@@ -1624,18 +1905,27 @@ def _card_is_done(card, board=None):
     return False
 
 def _card_is_overdue(card, board=None):
-    """Return True when an open card has a due date in the past."""
+    """Detect open cards whose due date is in the past.
+    Why: Deck's own overdue flag proved unreliable, so the date is compared.
+    """
     if not isinstance(card, dict):
         return False
     if card.get('archived') or _card_is_done(card, board):
         return False
+    # Ignore Deck's `overdue` field: it was observed as stale/incorrect on live cards.
     dd = _parse_duedate(card.get('duedate'))
     return bool(dd and dd < datetime.now(timezone.utc))
 
 def _overdue_flag():
+    """Return the shared red OVERDUE marker.
+    Why: reuse identical emphasis in list, agenda, search and show.
+    """
     return _st('OVERDUE', fg='red', bold=True)
 
 def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, include_done=True, all_cards=False):
+    """Collect due cards across configured instances and boards.
+    Why: agenda and completed share filtering, done exclusion and shared-board logic.
+    """
     items = []
     if all_instances:
         inst_items = list((cfg.get('instances') or {}).items())
@@ -1662,6 +1952,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                     filter_username = uname
             for c in cards:
                 if c.get('archived'): continue
+                # Done cards (even done-stack cards with done=null) must not appear in an agenda.
                 if not include_done and _card_is_done(c, bval):
                     continue
                 if filter_username and not _card_assigned_to(c, filter_username):
@@ -1692,14 +1983,17 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
     items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
     return items
 
-@cli.command("agenda")
+# ---- Agenda, daily review and bulk archive ----
+@cli.command("agenda", help="Show cards by due date (today, tomorrow, week, month).")
 @click.argument("period", default="today", required=False)
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
 @click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.pass_context
 def agenda_cmd(ctx, period, instance, all_instances, all_cards):
-    """Show cards by due date (today, tomorrow, week, month)."""
+    """Show cards due within a period.
+    Why: daily/weekly planning without opening the web UI.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
@@ -1732,6 +2026,9 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards):
     click.echo()
 
 def _resolve_completed_refs(refs_text, items, context="today's/overdue agenda"):
+    """Parse user-entered card references into agenda items.
+    Why: the completed prompt accepts several shorthand forms safely.
+    """
     # Build lookups
     by_inst_id = {}
     by_inst_board_id = {}
@@ -1786,7 +2083,7 @@ def _resolve_completed_refs(refs_text, items, context="today's/overdue agenda"):
         if k not in seen: seen.add(k); out.append(it)
     return out, errors
 
-@cli.command("completed")
+@cli.command("completed", help="List today's and overdue cards, mark selected cards as done, and move the rest to the next day.")
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
 @click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
@@ -1795,7 +2092,9 @@ def _resolve_completed_refs(refs_text, items, context="today's/overdue agenda"):
 @click.option("--desc-width", default=40, show_default=True, help="Max width for short description")
 @click.pass_context
 def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_width):
-    """List today's and overdue cards, mark selected cards as done, and move the rest to the next day."""
+    """Review today's/overdue cards, complete chosen, push the rest.
+    Why: end-of-day workflow in a single interactive command.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
@@ -1813,6 +2112,9 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
     ui_header(f"Today & overdue ({start.strftime('%Y-%m-%d')}) [{scope}]", hc)
 
     def _print_item(it):
+        """Print one line of the completed review.
+        Why: shared by the overdue and today sections.
+        """
         ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
         due_s = it['due'].strftime('%Y-%m-%d %H:%M') if it.get('overdue') else it['due'].strftime('%H:%M')
         desc = _short_desc(it['desc'], desc_width)
@@ -1872,6 +2174,7 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
     moved = []
     move_errors = []
     tomorrow_start = start + timedelta(days=1)
+    # Anything the user did not mark completed is rolled forward to the next day.
     for it in items:
         k = (it['instance'], it['board'], it['id'])
         if k in completed_keys:
@@ -1905,7 +2208,7 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
     click.echo()
 
 
-@cli.command("archive")
+@cli.command("archive", help="Archive done cards older than BEFORE_DATE. By default: in done stack, marked done, assigned to current user. With --all-done: all cards marked done (any stack/assignee).")
 @click.argument("board_key")
 @click.argument("before_date")
 @click.option("-i", "--instance")
@@ -1913,7 +2216,9 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
 @click.option("-y", "--yes", is_flag=True, help="Do not ask for confirmation")
 @click.pass_context
 def archive_cmd(ctx, board_key, before_date, instance, all_done, yes):
-    """Archive done cards older than BEFORE_DATE. By default: in done stack, marked done, assigned to current user. With --all-done: all cards marked done (any stack/assignee)."""
+    """Bulk-archive old done cards.
+    Why: keep the done stack small without manual deletions.
+    """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config(); inst_name, inst, board = get_mapping(cfg, instance, board_key); client = DeckClient(inst, debug=debug)
     ic = _inst_color(inst)
@@ -1981,5 +2286,6 @@ def archive_cmd(ctx, board_key, before_date, instance, all_done, yes):
     if errs: ui_kv("Errors", str(errs), 'red')
 
 
+# ---- Entry point ----
 if __name__ == "__main__":
     cli()
