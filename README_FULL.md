@@ -569,12 +569,18 @@ Usage: ncdeck show [OPTIONS] BOARD_KEY CARD_ID
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+| `--raw` | flag | `False` | Show the raw Markdown source of the description and comments instead of rendering it. |
 
 **Example:**
 
 ```bash
 ncdeck show inbox 123
+
+# Force raw Markdown (e.g. for copying or scripting)
+ncdeck show inbox 123 --raw
 ```
+
+**Markdown rendering:** When stdout is a terminal, the card description and comment messages are rendered with a lightweight built-in Markdown renderer — headings, bold/italic, inline code, fenced code blocks, bullet/numbered/task lists (`☐` / `☑`), quotes, links, and horizontal rules — using the instance color. No extra dependencies are required. When output is piped (not a TTY) the raw Markdown is kept, so scripts see the original source; `--raw` forces this behavior even on a terminal.
 
 **Output includes:** Card ID and title, board/instance, stack, status (active/done/overdue/archived), done timestamp (or an indication that the card is in the done stack without a timestamp), due date, labels, assignees, created/modified timestamps, dependent cards, full description, and the card's comments (author, timestamp, and message).
 

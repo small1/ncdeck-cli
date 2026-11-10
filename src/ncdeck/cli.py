@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, json, time, webbrowser, re
+import os, sys, json, time, webbrowser, re, shutil, unicodedata
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
@@ -1025,14 +1025,144 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
         click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr}{counter} {t}{(' '+lstr) if lstr else ''}")
         if c.get('duedate'): ui_kv("Due", _st(_fmt_ts(c['duedate']), fg='red', bold=True) if is_overdue else _fmt_ts(c['duedate']), ic, label_width=10)
 
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
+
+def _char_width(ch):
+    return 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+
+def _ansi_wrap(styled, width, indent='  '):
+    """Wrap ANSI-styled text to width, prefixing every physical line."""
+    out, buf, visible = [], [], 0
+    def flush():
+        nonlocal buf, visible
+        out.append(indent + ''.join(buf))
+        buf, visible = [], 0
+    pos = 0
+    for m in _ANSI_RE.finditer(styled):
+        for ch in styled[pos:m.start()]:
+            if ch == '\n':
+                flush()
+            else:
+                cw = _char_width(ch)
+                if visible + cw > width:
+                    flush()
+                buf.append(ch); visible += cw
+        buf.append(m.group(0))
+        pos = m.end()
+    for ch in styled[pos:]:
+        if ch == '\n':
+            flush()
+        else:
+            cw = _char_width(ch)
+            if visible + cw > width:
+                flush()
+            buf.append(ch); visible += cw
+    if buf:
+        flush()
+    return '\n'.join(out)
+
+def _inline_md(text, ic):
+    """Convert inline Markdown to ANSI styles without external deps."""
+    stash = {}
+    def hold(styled):
+        key = f'\x00{len(stash)}\x00'
+        stash[key] = styled
+        return key
+    # Inline code first, so its contents are not re-parsed by later rules.
+    text = re.sub(r'`([^`]+)`', lambda m: hold(click.style(m.group(1), fg='cyan')), text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)\s]+)\)',
+                  lambda m: hold(click.style(m.group(1), fg=ic) + click.style(f' ({m.group(2)})', dim=True)), text)
+    text = re.sub(r'\*\*(.+?)\*\*|__(.+?)__',
+                  lambda m: hold(click.style(m.group(1) or m.group(2), bold=True)), text)
+    text = re.sub(r'~~(.+?)~~',
+                  lambda m: hold(click.style(m.group(1), strikethrough=True)), text)
+    text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)|(?<!\w)_([^_]+)_(?!\w)',
+                  lambda m: hold(click.style(m.group(1) or m.group(2), italic=True)), text)
+    for key, val in stash.items():
+        text = text.replace(key, val)
+    return text
+
+def _render_markdown(text, ic, indent='  '):
+    """Render a useful subset of Markdown to ANSI text for the terminal."""
+    if not text or not str(text).strip():
+        return indent + click.style('(empty)', dim=True)
+    try:
+        term_width = shutil.get_terminal_size().columns
+    except Exception:
+        term_width = 80
+    width = max(40, term_width - len(indent) - 2)
+    out = []
+    in_code = False
+    code_buf = []
+    for raw in str(text).splitlines():
+        line = raw.rstrip('\r')
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            if in_code:
+                for cl in code_buf:
+                    out.append(_ansi_wrap(click.style('    ' + cl, dim=True), width, indent))
+                code_buf = []
+                in_code = False
+            else:
+                in_code = True
+            continue
+        if in_code:
+            code_buf.append(line)
+            continue
+        if not stripped:
+            out.append(indent)
+            continue
+        if re.fullmatch(r'(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}', stripped):
+            out.append(_ansi_wrap(click.style('─' * min(width, 60), fg=ic, dim=True), width, indent))
+            continue
+        m = re.match(r'^(#{1,6})\s+(.*)$', stripped)
+        if m:
+            level = len(m.group(1))
+            styled = click.style(_inline_md(m.group(2), ic), fg=ic, bold=True, underline=(level == 1))
+            out.append(_ansi_wrap(styled, width, indent))
+            continue
+        if stripped.startswith('>'):
+            content = stripped.lstrip('>').strip()
+            styled = click.style('│ ', fg=ic, dim=True) + _inline_md(content, ic)
+            out.append(_ansi_wrap(styled, width, indent))
+            continue
+        m = re.match(r'^(\s*)(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s*(.*)$', line)
+        if m:
+            pad = '  ' * (len(m.group(1)) // 2)
+            done = m.group(2).lower() == 'x'
+            box = '☑' if done else '☐'
+            body = click.style(_inline_md(m.group(3), ic), dim=done)
+            marker = click.style(f'{pad}{box} ', fg='green' if done else ic, bold=not done)
+            out.append(_ansi_wrap(marker + body, width, indent))
+            continue
+        m = re.match(r'^(\s*)([-*+])\s+(.*)$', line)
+        if m:
+            pad = '  ' * (len(m.group(1)) // 2)
+            styled = click.style(f'{pad}• ', fg=ic, bold=True) + _inline_md(m.group(3), ic)
+            out.append(_ansi_wrap(styled, width, indent))
+            continue
+        m = re.match(r'^(\s*)(\d+[.)])\s+(.*)$', line)
+        if m:
+            pad = '  ' * (len(m.group(1)) // 2)
+            styled = click.style(f'{pad}{m.group(2)} ', fg=ic, bold=True) + _inline_md(m.group(3), ic)
+            out.append(_ansi_wrap(styled, width, indent))
+            continue
+        out.append(_ansi_wrap(_inline_md(line, ic), width, indent))
+    if in_code:
+        for cl in code_buf:
+            out.append(_ansi_wrap(click.style('    ' + cl, dim=True), width, indent))
+    return '\n'.join(out)
+
 @cli.command("show")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
 @click.option("-i","--instance")
+@click.option("--raw","raw_output",is_flag=True,help="Show raw Markdown source instead of rendering it")
 @click.pass_context
-def show_cmd(ctx,board_key,card_id,instance):
+def show_cmd(ctx,board_key,card_id,instance,raw_output):
     """Show full details for a card."""
     debug = ctx.obj.get('debug') if ctx.obj else False
+    render_md = bool(sys.stdout.isatty()) and not raw_output
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     card=client.get_card_full(board["board_id"],card_id)
     ic = _inst_color(inst)
@@ -1075,7 +1205,11 @@ def show_cmd(ctx,board_key,card_id,instance):
     if deps: ui_kv("Dependents", ', '.join(f'#{i}' for i in deps), ic)
     ui_sep(ic)
     click.echo(_st("  Description", fg=ic, bold=True))
-    click.echo(f"  {card.get('description') or '(empty)'}")
+    desc = card.get('description') or ''
+    if render_md:
+        click.echo(_render_markdown(desc, ic), color=True)
+    else:
+        click.echo(f"  {desc or '(empty)'}")
     ui_sep(ic)
     click.echo(_st("  Comments", fg=ic, bold=True))
     try:
@@ -1104,8 +1238,11 @@ def show_cmd(ctx,board_key,card_id,instance):
             if reply_to:
                 click.echo(f"    {_st('↳ reply to #' + str(reply_to), dim=True)}")
             msg = str(c.get('message') or '')
-            for line in (msg.splitlines() or ['']):
-                click.echo(f"    {line}")
+            if render_md:
+                click.echo(_render_markdown(msg, ic, indent='    '), color=True)
+            else:
+                for line in (msg.splitlines() or ['']):
+                    click.echo(f"    {line}")
             click.echo()
     if deps:
         ui_sep(ic)
