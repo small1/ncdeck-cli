@@ -256,6 +256,48 @@ Usage: ncdeck create [OPTIONS] BOARD_KEY TITLE
 | `-a, --assign TEXT` | `string` (multiple) | `[]` | Assign card to user(s) by Nextcloud user ID. Can be used multiple times. |
 | `-i, --instance TEXT` | `string` | `default_instance` | Instance to use for this card. |
 
+### `ncdeck description`
+
+Set or amend a card's description.
+
+```text
+Usage: ncdeck description [OPTIONS] BOARD_KEY CARD_ID [TEXT]
+```
+
+By default the description is **replaced** with `TEXT`. With `--amend`, `TEXT` is appended to the end of the existing description.
+
+#### Arguments
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `BOARD_KEY` | Yes | The short key of the board mapping from your config. |
+| `CARD_ID` | Yes | The numeric ID of the card. |
+| `TEXT` | No | Description text. Use `-` to read from stdin (or pipe input when omitted). |
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `-f, --file PATH` | `path` | `None` | Read description text from a local file instead of `TEXT`. |
+| `--amend` | flag | `False` | Append to the existing description instead of replacing it. |
+| `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+
+**Examples:**
+
+```bash
+# Replace the description
+ncdeck description inbox 123 "New description"
+
+# Append to the existing description
+ncdeck description inbox 123 --amend "Follow-up notes"
+
+# Append the contents of a file
+ncdeck description inbox 123 --amend -f notes.md
+
+# Read from stdin
+echo "Text from stdin" | ncdeck description inbox 123 --amend
+```
+
 ### `ncdeck done`
 
 Mark a card as done and move it to the default done stack for the board, or archive it.

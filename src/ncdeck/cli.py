@@ -753,6 +753,48 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
                 ui_warn(f"Failed to attach {Path(a).name}: {e}")
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
+@cli.command("description")
+@click.argument("board_key")
+@click.argument("card_id",type=int)
+@click.argument("text",required=False)
+@click.option("-f","--file","description_file",type=click.Path(exists=True,path_type=Path),help="Read description text from a file")
+@click.option("--amend",is_flag=True,help="Append to the existing description instead of replacing it")
+@click.option("-i","--instance")
+@click.pass_context
+def description_cmd(ctx,board_key,card_id,text,description_file,amend,instance):
+    """Set or amend a card's description."""
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    if text is not None and description_file:
+        raise click.ClickException("Provide either TEXT or --file, not both")
+    if description_file:
+        new_text = description_file.read_text(encoding="utf-8")
+    elif text == '-':
+        new_text = sys.stdin.read()
+    elif text is not None:
+        new_text = text
+    elif not sys.stdin.isatty():
+        new_text = sys.stdin.read()
+    else:
+        raise click.ClickException("Provide description TEXT, --file, or pipe it via stdin")
+    if not new_text.strip():
+        raise click.ClickException("Description text is empty")
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
+    ic=_inst_color(inst)
+    try:
+        if amend:
+            card = client.get_card(board["board_id"], card_id)
+            existing = card.get('description') or ''
+            if existing and not existing.endswith('\n'):
+                existing += '\n'
+            new_desc = existing + new_text
+        else:
+            new_desc = new_text
+        client.update_card(board["board_id"], card_id, description=new_desc)
+        action = "Amended" if amend else "Set"
+        ui_ok(f"{action} description on {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+        ui_kv("Preview", _short_desc(new_desc, 100), ic)
+    except Exception as e: ui_err(str(e)); sys.exit(1)
+
 @cli.command("done")
 @click.argument("board_key")
 @click.argument("card_id",type=int)
