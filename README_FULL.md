@@ -21,11 +21,11 @@
 - **Markdown descriptions** - Pass descriptions directly, from a file (`-f`), or via piped stdin
 - **Due dates** - Set due dates in ISO format
 - **Tags/labels by name** - Use human-readable label names with `-t/--tag` instead of numeric IDs
-- **Label discovery** - List all available labels for a board with `ncdeck list --labels`
+- **Cached label discovery** - Labels (with colors) are discovered when a board is added and stored in config; list them with `ncdeck labels` or refresh with `ncdeck labels BOARD_KEY --refresh`
 - **Mark as done** - Mark cards as done and automatically move them to a configured done stack
 - **Move cards** - Move cards between any stacks on a board
 - **Archive cards** - Optionally archive cards instead of moving to done stack
-- **API version compatible** - Tries multiple endpoints to fetch labels across different Nextcloud Deck versions
+- **API version compatible** - Tries multiple endpoints when discovering labels across different Nextcloud Deck versions
 
 ## Requirements
 
@@ -151,15 +151,15 @@ ncdeck list --boards
 # List all stacks and their IDs for a given board
 ncdeck list --stacks 1
 
-# List all labels/tags for a configured board
-ncdeck list --labels inbox
+# List cached labels/tags for a configured board (discovers and saves once if missing)
+ncdeck labels inbox
 ```
 
 ## Commands
 
 ### `ncdeck account add` (account wizard)
 
-Interactive wizard to add a Nextcloud account using Nextcloud Login Flow v2. Opens a browser for authentication, auto-discovers boards and stacks, lets you assign short names to boards, select done stacks, and merges into your existing config.
+Interactive wizard to add a Nextcloud account using Nextcloud Login Flow v2. Opens a browser for authentication, auto-discovers boards, stacks, and labels (with colors), lets you assign short names to boards, select done stacks, and merges into your existing config.
 
 ```text
 Usage: ncdeck account add [OPTIONS]
@@ -178,11 +178,12 @@ The wizard will:
 2. Wait for you to approve the login in Nextcloud
 3. Auto-detect the server theme color (when available) and prompt for the instance color
 4. Auto-discover all boards accessible to your account
-5. For each board, ask for a short name (easy to remember)
-6. Show available stacks and ask which one to use for creating cards
-7. Ask which stack should be the "done" stack for `ncdeck done`
-8. Ask if this should be the default instance
-9. Save to your existing config (preserving other accounts)
+5. For each board, discover its labels (with colors) and save them to config
+6. For each board, ask for a short name (easy to remember)
+7. Show available stacks and ask which one to use for creating cards
+8. Ask which stack should be the "done" stack for `ncdeck done`
+9. Ask if this should be the default instance
+10. Save to your existing config (preserving other accounts)
 
 ### `ncdeck config color`
 
@@ -200,7 +201,7 @@ Usage: ncdeck config color [OPTIONS] INSTANCE_NAME [COLOR]
 
 ### `ncdeck list`
 
-Used to discover boards, stacks, and labels/tags.
+Used to discover boards, stacks, and cached labels/tags.
 
 ```text
 Usage: ncdeck list [OPTIONS]
@@ -211,7 +212,7 @@ Usage: ncdeck list [OPTIONS]
 | `-i, --instance TEXT` | Use a specific instance from config. Falls back to `default_instance`. |
 | `--boards` | List all accessible Deck boards with `board_id`, title and owner. |
 | `--stacks INTEGER` | List all stacks for the given `board_id` with `stack_id`, title and order. |
-| `--labels BOARD_KEY` | List all available tags/labels for a configured board, including their IDs. Case-insensitive matching is used when applying them. |
+| `--labels BOARD_KEY` | List cached tags/labels for a configured board (IDs and colors). Discovers and saves them once if not yet in config. |
 
 **Examples:**
 
@@ -225,9 +226,52 @@ ncdeck list --boards -i work
 # List stacks for board_id 1
 ncdeck list --stacks 1 -i work
 
-# List labels for the configured 'bugs' board
+# List labels for the configured 'bugs' board (also available as `ncdeck labels bugs -i work`)
 ncdeck list --labels bugs -i work
 ```
+
+### `ncdeck labels`
+
+List the labels cached in config for a board. Labels are discovered (with their colors) when a board is added via `ncdeck account add`, so creating cards with `-t/--tag` never needs a label lookup. Use `--refresh` after changing labels in the Deck web UI.
+
+```text
+Usage: ncdeck labels [OPTIONS] BOARD_KEY
+```
+
+#### Arguments
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `BOARD_KEY` | Yes | The short key of the board mapping from your config. |
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+| `--refresh` | flag | `False` | Fetch labels from the server again and overwrite the cached ones in config. |
+
+**Examples:**
+
+```bash
+# Show cached labels (discovers and saves them if the board was added before this feature)
+ncdeck labels inbox
+
+# Refresh after adding/renaming labels in the Deck web UI
+ncdeck labels inbox --refresh -i mync
+```
+
+Example output:
+
+```text
+Labels: mync/inbox (3)
+────────────────────────────────────────
+  • [bug] (id=5, color=FF7A66)
+  • [critical] (id=12, color=31CC7C)
+  • [frontend] (id=14, color=317CCC)
+```
+
+For older configs that have no cached labels, the first `ncdeck labels` (or `list --labels`) call discovers them once and saves them to config.
 
 ### `ncdeck create`
 
@@ -562,20 +606,27 @@ ncdeck create inbox "Submit expense report" -p "[FINANCE]" --due-date 2026-11-05
 
 ### Adding tags/labels by name
 
-First, discover available labels for your board:
+First, check the labels cached for your board (they are stored in config when the board is added):
 
 ```bash
-ncdeck list --labels bugs -i work
+ncdeck labels bugs -i work
 ```
 
 Example output:
 
 ```text
-Tags/labels for work/bugs (board_id=2):
-  - bug (id=5)
-  - critical (id=12)
-  - needs-repro (id=8)
-  - frontend (id=14)
+Labels: work/bugs (4)
+────────────────────────────────────────
+  • [bug] (id=5, color=FF7A66)
+  • [critical] (id=12, color=31CC7C)
+  • [needs-repro] (id=8, color=F1DB50)
+  • [frontend] (id=14, color=317CCC)
+```
+
+If labels were added or renamed in the Deck web UI, refresh the cache first:
+
+```bash
+ncdeck labels bugs -i work --refresh
 ```
 
 Then use them by name:
@@ -632,7 +683,7 @@ ncdeck create bugs "Memory leak in worker" \
 
 - **Use App Passwords**: Generate one at `Settings > Security > Devices & sessions > Create new app password`. Never commit your real password to version control.
 - **Markdown is preserved**: Nextcloud Deck renders Markdown in card descriptions, so lists, code blocks, links, etc. will display correctly.
-- **Labels are board-specific**: The same label name can exist on different boards with different IDs. `ncdeck` always resolves labels against the target board of the card you're creating.
+- **Labels are board-specific and cached**: The same label name can exist on different boards with different IDs. `ncdeck` resolves `-t/--tag` against the labels cached in config for that board (no API lookup on each create). Run `ncdeck labels BOARD_KEY --refresh` after changing labels in the Deck web UI.
 - **Prefix is flexible**: Since prefix is a CLI flag, you can use different conventions per card without changing your config.
 - **Piping is great for automation**: Combine with `git log`, `journalctl`, `curl`, scripts, or clipboard tools to quickly create cards.
 - **Done workflow**: Configure `done_stack_id` for each board to streamline marking cards as complete. You can also use `--archive` if you prefer archiving.
@@ -648,10 +699,10 @@ ncdeck create bugs "Memory leak in worker" \
 | `Board mapping '...' not found...` | Unknown `BOARD_KEY` | Run `ncdeck list` to see valid board keys for your instance. |
 | `HTTP error: 401 ...` | Wrong username/password or using main password with 2FA | Use an App Password from Nextcloud Security settings. |
 | `HTTP error: 404 ...` | Wrong `url`, `board_id`, or `stack_id` | Verify IDs with `ncdeck list --boards` and `ncdeck list --stacks <board_id>`. Also ensure no trailing slash in `url`. |
-| `HTTP error: 405 ...` on labels | API version difference | The updated script already handles this by fetching labels from board details first. If it still fails, run `ncdeck list --labels <board_key>` to see the debug output. |
-| `Unknown tag(s): ...` | Label doesn't exist on that board | Run `ncdeck list --labels <board_key>` to see exact names. Remember matching is case-insensitive. |
-| `No labels/tags found on this board` | Board has no labels created yet | Create at least one label in the Nextcloud Deck web UI first, then try again. |
-| `Could not fetch labels for this board` | Permissions/network issue | Check your app password has access to that board and your instance is reachable. |
+| `HTTP error: 405 ...` on label discovery | API version difference | `ncdeck` tries multiple endpoints when discovering labels. Run `ncdeck labels <board_key> --refresh` to retry. |
+| `Unknown tag(s): ...` | Label doesn't exist in the cached list for that board | Run `ncdeck labels <board_key>` to see exact names, or `--refresh` to pick up new labels. Matching is case-insensitive. |
+| `No labels configured for this board` | Board was added before label caching, or has no labels | Run `ncdeck labels BOARD_KEY --refresh`. If the board truly has no labels, create one in the Deck web UI first. |
+| Cached labels are stale after changes in the Deck web UI | Labels are read from config, not fetched on every create | Run `ncdeck labels BOARD_KEY --refresh` to re-fetch and save them. |
 | `No done stack configured for board '...'` | Missing `done_stack_id` in config | Add `done_stack_id` to your board mapping in config, or use `--stack <id>`. |
 
 ## Example minimal end-to-end
@@ -671,10 +722,15 @@ instances:
         board_id: 10
         stack_id: 42
         done_stack_id: 43
+        labels:
+          - id: 5
+            title: reading
+            color: FF7A66
 YAML
 
-# 2) Discover labels
-ncdeck list --labels inbox
+# 2) Show cached labels (or refresh them)
+ncdeck labels inbox
+# ncdeck labels inbox --refresh
 
 # 3) Create your first card
 ncdeck create inbox "Read docs" -p "[LEARN]" -t reading --due-date 2026-10-31 -d "Go through Nextcloud Deck API notes"

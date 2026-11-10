@@ -353,11 +353,19 @@ class DeckClient:
     def create_card(self, board_id, stack_id, title, description="", duedate=None, labels=None, assigned_users=None):
         payload={"title":title,"description":description,"type":"plain","order":999}
         if duedate: payload["duedate"]=duedate
-        if labels: payload["labels"]=[{"id":int(l)} for l in labels]
         card = self._post(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards", payload)
+        card_id = card.get('id'); card_stack = card.get('stackId') or stack_id
+        for lid in labels or []:
+            lid = int(lid)
+            try:
+                self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card_stack}/cards/{card_id}/assignLabel", {"labelId": lid})
+            except Exception as e1:
+                if self.debug: click.echo(f"[DEBUG] assignLabel failed for {lid}: {e1}", err=True)
+                try:
+                    self._post_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/label/{lid}", {"boardId": board_id})
+                except Exception as e2:
+                    raise e2
         if assigned_users:
-            card_id = card.get('id')
-            card_stack = card.get('stackId') or stack_id
             for u in assigned_users:
                 try:
                     self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card_stack}/cards/{card_id}/assignUser", {"userId": u})
@@ -434,14 +442,46 @@ def read_description(description: str, description_file: Optional[Path]) -> str:
         return stdin_data
     return description
 
-def resolve_label_ids(client: DeckClient, board_id: int, tag_names: List[str]) -> List[int]:
+def _normalize_labels(labels):
+    """Store only the label fields ncdeck needs, preserving Deck's color."""
+    out=[]
+    for label in labels or []:
+        if not isinstance(label, dict): continue
+        title = label.get('title') or label.get('name')
+        lid = label.get('id')
+        if lid is None or not title: continue
+        try: lid = int(lid)
+        except (TypeError, ValueError): continue
+        entry={'id': lid, 'title': str(title)}
+        color = label.get('color')
+        if color not in (None, ''): entry['color'] = str(color)
+        out.append(entry)
+    return out
+
+def _board_labels(board, client=None, cfg=None, inst_name=None, board_key=None, refresh=False):
+    """Return cached labels for a board, discovering and saving them if needed."""
+    if not isinstance(board, dict):
+        return []
+    cached = board.get('labels')
+    if not refresh and isinstance(cached, list):
+        return cached
+    if client is None:
+        return cached if isinstance(cached, list) else []
+    labels = _normalize_labels(client.list_labels(board.get('board_id')))
+    board['labels'] = labels
+    if cfg is not None and inst_name and board_key:
+        cfg.setdefault('instances', {}).setdefault(inst_name, {}).setdefault('boards', {})[board_key] = board
+        save_config(cfg)
+    return labels
+
+def resolve_label_ids(client: DeckClient, board: dict, tag_names: List[str], cfg=None, inst_name=None, board_key=None) -> List[int]:
     if not tag_names: return []
-    labels = client.list_labels(board_id)
+    labels = _board_labels(board, client=client, cfg=cfg, inst_name=inst_name, board_key=board_key)
     label_map={}
     for label in labels:
         name = label.get("title") or label.get("name") or ""
         if name: label_map[name.strip().lower()]=label["id"]
-    if not label_map: raise click.ClickException("No labels/tags found on this board.")
+    if not label_map: raise click.ClickException("No labels configured for this board. Run `ncdeck labels BOARD_KEY --refresh`.")
     resolved=[]; missing=[]
     for tag in tag_names:
         key=tag.strip().lower()
@@ -519,6 +559,12 @@ def account_add_cmd(instance_name, url, theme_color):
             board_key = click.prompt("Short name for this board", default=default_key)
             board_key = ''.join(c if c.isalnum() or c in ['_', '-'] else '_' for c in board_key)
             stacks = client.list_stacks(board_id)
+            try:
+                labels = _normalize_labels(client.list_labels(board_id))
+            except Exception as e:
+                labels = []
+                ui_warn(f"Could not discover labels for '{board_title}': {e}")
+            ui_kv("Labels", f"{len(labels)} discovered" if labels else "none discovered", inst_color)
             stack_id=None; done_stack_id=None
             if stacks:
                 ui_kv("Stacks", "", inst_color)
@@ -531,7 +577,7 @@ def account_add_cmd(instance_name, url, theme_color):
                 if done_choice>0 and done_choice<=len(stacks): done_stack_id=stacks[done_choice-1]['id']
             else:
                 stack_id = click.prompt("Stack ID for creating new cards", type=int)
-            be={"board_id":board_id,"stack_id":stack_id}
+            be={"board_id":board_id,"stack_id":stack_id,"labels":labels}
             if done_stack_id: be["done_stack_id"]=done_stack_id
             boards_config[board_key]=be
     inst_entry={"url":server.rstrip('/'),"username":login_name,"password":app_password,"boards":boards_config}
@@ -705,11 +751,16 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
     if labels_board:
         inst_name_res,inst_res,board=get_mapping(cfg,instance,labels_board)
         rc=_inst_color(inst_res)
+        had_cache = isinstance(board.get('labels'), list)
         try:
-            labels=client.list_labels(board["board_id"])
-            ui_header(f"Tags/labels: {inst_name_res}/{labels_board}", rc)
+            labels=_board_labels(board, client=client, cfg=cfg, inst_name=inst_name_res, board_key=labels_board)
+            ui_header(f"Tags/labels: {inst_name_res}/{labels_board} ({len(labels)})", rc)
             if not labels: ui_dim("  (no labels found)"); return
-            for l in labels: click.echo(f"  {_st('•', fg=rc)} {(l.get('title') or l.get('name'))} {_st(f'(id={l['id']})', dim=True)}")
+            for l in labels:
+                lid=l.get('id'); color=l.get('color')
+                meta=f"(id={lid}" + (f", color={color}" if color else "") + ")"
+                click.echo(f"  {_st('•', fg=rc)} {_label_chips([l], rc)} {_st(meta, dim=True)}")
+            if not had_cache: ui_dim(f"  Discovered and saved {len(labels)} label(s) in config.")
         except Exception as e: ui_err(str(e))
         return
     ui_header(f"Instance: {inst_name}", ic)
@@ -719,6 +770,36 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
     for k,v in inst.get("boards",{}).items():
         di=f" done_stack={v['done_stack_id']}" if v.get("done_stack_id") else ""
         click.echo(f"  {_st('•', fg=ic)} {_st(k, fg=ic, bold=True)}  board={v['board_id']} stack={v['stack_id']}{_st(di, dim=True)}")
+
+@cli.command("labels")
+@click.argument("board_key")
+@click.option("-i","--instance")
+@click.option("--refresh", is_flag=True, help="Fetch labels from the server and save them to config")
+@click.pass_context
+def labels_cmd(ctx, board_key, instance, refresh):
+    """List labels configured for a board (cached from account setup)."""
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key)
+    ic=_inst_color(inst)
+    client=DeckClient(inst, debug=debug)
+    had_cache = isinstance(board.get('labels'), list)
+    try:
+        labels=_board_labels(board, client=client, cfg=cfg, inst_name=inst_name, board_key=board_key, refresh=refresh)
+    except Exception as e:
+        ui_err(str(e)); sys.exit(1)
+    ui_header(f"Labels: {inst_name}/{board_key} ({len(labels)})", ic)
+    if not labels:
+        ui_dim("  (no labels found)")
+        return
+    for l in labels:
+        lid=l.get('id')
+        color=l.get('color')
+        meta=f"(id={lid}" + (f", color={color}" if color else "") + ")"
+        click.echo(f"  {_st('•', fg=ic)} {_label_chips([l], ic)} {_st(meta, dim=True)}")
+    if refresh:
+        ui_dim(f"  Refreshed and saved {len(labels)} label(s) in config.")
+    elif not had_cache:
+        ui_dim(f"  Discovered and saved {len(labels)} label(s) in config.")
 
 @cli.command("create")
 @click.argument("board_key")
@@ -738,7 +819,7 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ic=_inst_color(inst)
     ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
-    lids=resolve_label_ids(client,board["board_id"],list(tag)) if tag else []
+    lids=resolve_label_ids(client,board,list(tag),cfg=cfg,inst_name=inst_name,board_key=board_key) if tag else []
     due_norm = _normalize_create_duedate(due_date) if due_date else None
     assigned_users = list(assign) if assign else ([inst['username']] if inst.get('username') else None)
     try:
