@@ -334,6 +334,42 @@ ncdeck assign inbox 123 alice
 ncdeck assign inbox 123 alice --unassign
 ```
 
+### `ncdeck comment`
+
+Add a comment to a card. Use `-` as `MESSAGE` to read the comment from stdin (useful for multi-line text).
+
+```text
+Usage: ncdeck comment [OPTIONS] BOARD_KEY CARD_ID MESSAGE
+```
+
+#### Arguments
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `BOARD_KEY` | Yes | The short key of the board mapping from your config. |
+| `CARD_ID` | Yes | The numeric ID of the card to comment on. |
+| `MESSAGE` | Yes | Comment text (max 1000 chars). Use `-` to read from stdin. |
+
+#### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `-i, --instance TEXT` | `string` | `default_instance` | Instance to use. |
+| `--parent INTEGER` | `integer` | `None` | ID of the comment to reply to. |
+
+**Examples:**
+
+```bash
+# Add a comment
+ncdeck comment inbox 123 "Waiting for the vendor response"
+
+# Reply to comment #7
+ncdeck comment inbox 123 "Any update?" --parent 7
+
+# Multi-line comment from stdin
+ncdeck comment inbox 123 -
+```
+
 ### `ncdeck list --cards`
 
 List cards in a configured board with details.
@@ -423,7 +459,7 @@ Usage: ncdeck show [OPTIONS] BOARD_KEY CARD_ID
 ncdeck show inbox 123
 ```
 
-**Output includes:** Card ID and title, board/instance, stack, status (active/archived), due date, labels, assignees, created/modified timestamps, and full description.
+**Output includes:** Card ID and title, board/instance, stack, status (active/archived), due date, labels, assignees, created/modified timestamps, full description, and the card's comments (author, timestamp, and message).
 
 ## Usage Examples
 

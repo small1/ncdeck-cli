@@ -206,6 +206,69 @@ class DeckClient:
             return (j.get('ocs') or {}).get('data') or {}
         return j
 
+    def _ocs_data(self, j):
+        if isinstance(j, dict) and 'ocs' in j:
+            return (j.get('ocs') or {}).get('data')
+        return j
+
+    def _ocs_get(self, path, params=None):
+        url = f"{self.url}{path}"
+        if '?' in url:
+            url += '&format=json'
+        else:
+            url += '?format=json'
+        headers = dict(self.session.headers)
+        headers['OCS-APIREQUEST'] = 'true'
+        headers['Accept'] = 'application/json'
+        headers.pop('Content-Type', None)
+        if self.debug:
+            click.echo(f"[DEBUG] GET {url} params={params}", err=True)
+        r = self.session.get(url, params=params, headers=headers)
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:500]}", err=True)
+        if not r.ok:
+            msg = r.text.strip()
+            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:500]}")
+        try:
+            j = r.json()
+        except Exception:
+            return {}
+        return self._ocs_data(j)
+
+    def _post_ocs(self, path, data):
+        url = f"{self.url}{path}"
+        if '?' in url:
+            url += '&format=json'
+        else:
+            url += '?format=json'
+        headers = dict(self.session.headers)
+        headers['OCS-APIREQUEST'] = 'true'
+        headers['Accept'] = 'application/json'
+        headers['Content-Type'] = 'application/json'
+        if self.debug:
+            click.echo(f"[DEBUG] POST {url}", err=True)
+            try: click.echo(f"[DEBUG] DATA {json.dumps(data)[:800]}", err=True)
+            except: pass
+        r = self.session.post(url, data=json.dumps(data), headers=headers)
+        if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:500]}", err=True)
+        if not r.ok:
+            msg = r.text.strip()
+            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:500]}")
+        try:
+            j = r.json()
+        except Exception:
+            return {}
+        return self._ocs_data(j)
+
+    def list_comments(self, card_id, limit=50, offset=0):
+        return self._ocs_get(
+            f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments",
+            params={'limit': int(limit), 'offset': int(offset)},
+        ) or []
+
+    def add_comment(self, card_id, message, parent_id=None):
+        payload = {"message": message, "parentId": parent_id}
+        return self._post_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments", payload)
+
     def reorder_card(self, board_id, card_id, target_stack_id, order=0):
         # Use OCS reorder endpoint (matches Deck web UI behavior) with full card payload
         card = self.get_card(board_id, card_id)
@@ -766,6 +829,38 @@ def attach_cmd(ctx,board_key,card_id,file_path,instance):
         ui_ok(f"Attached {_st(file_path.name, bold=True)} to {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
     except Exception as e: ui_err(str(e)); sys.exit(1)
 
+@cli.command("comment")
+@click.argument("board_key")
+@click.argument("card_id",type=int)
+@click.argument("message")
+@click.option("-i","--instance")
+@click.option("--parent",type=int,help="ID of the comment to reply to")
+@click.pass_context
+def comment_cmd(ctx,board_key,card_id,message,instance,parent):
+    """Add a comment to a card. Use '-' as MESSAGE to read from stdin."""
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    if message == '-':
+        message = sys.stdin.read()
+    message = (message or '').strip()
+    if not message:
+        raise click.ClickException("Comment message is empty")
+    if len(message) > 1000:
+        raise click.ClickException(f"Comment is too long ({len(message)} chars); maximum is 1000")
+    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
+    ic=_inst_color(inst)
+    try:
+        comment = client.add_comment(card_id, message, parent_id=parent)
+        cid = comment.get('id') if isinstance(comment, dict) else None
+        ref = f"#{cid}" if cid is not None else "comment"
+        ui_ok(f"Added {_st(ref, fg=ic, bold=True)} to {_st('#'+str(card_id), fg=ic, bold=True)} ({_st(f'{inst_name}/{board_key}', fg=ic)})")
+        author = (comment.get('actorDisplayName') or comment.get('actorId')) if isinstance(comment, dict) else None
+        ts = _fmt_ts(comment.get('creationDateTime')) if isinstance(comment, dict) else None
+        meta = ' '.join(x for x in [author, ts] if x)
+        if meta:
+            click.echo(f"  {_st(meta, dim=True)}")
+        ui_dim(f"  {_short_desc(message, 100)}")
+    except Exception as e: ui_err(str(e)); sys.exit(1)
+
 @cli.command("search")
 @click.argument("board_key")
 @click.argument("query")
@@ -833,6 +928,37 @@ def show_cmd(ctx,board_key,card_id,instance):
     ui_sep(ic)
     click.echo(_st("  Description", fg=ic, bold=True))
     click.echo(f"  {card.get('description') or '(empty)'}")
+    ui_sep(ic)
+    click.echo(_st("  Comments", fg=ic, bold=True))
+    try:
+        comments = client.list_comments(card_id)
+    except Exception as e:
+        comments = None
+        if debug: click.echo(f"[DEBUG] comments fetch failed: {e}", err=True)
+    if comments is None:
+        ui_dim("  (comments unavailable)")
+    elif not comments:
+        ui_dim("  (none)")
+    else:
+        for c in comments:
+            if not isinstance(c, dict):
+                continue
+            author = c.get('actorDisplayName') or c.get('actorId') or 'unknown'
+            ts = _fmt_ts(c.get('creationDateTime'))
+            cid_s = f"#{c.get('id')}" if c.get('id') is not None else ''
+            head = f"  {_st('●', fg=ic)} {_st(author, bold=True)} {_st(ts, dim=True)}"
+            if cid_s:
+                head += f" {_st(cid_s, fg=ic)}"
+            click.echo(head)
+            reply_to = c.get('replyTo')
+            if isinstance(reply_to, dict):
+                reply_to = reply_to.get('id')
+            if reply_to:
+                click.echo(f"    {_st('↳ reply to #' + str(reply_to), dim=True)}")
+            msg = str(c.get('message') or '')
+            for line in (msg.splitlines() or ['']):
+                click.echo(f"    {line}")
+            click.echo()
     ui_sep(ic)
 
 def _fmt_ts(v):
