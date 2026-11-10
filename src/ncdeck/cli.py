@@ -687,6 +687,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
             if card.get('done'): flags.append(_st('DONE', fg='green'))
             fstr=(' '+' '.join(f'[{f}]' for f in flags)) if flags else ''
             counter=_card_counter(card)
+            lstr=_label_chips(card.get('labels') or [], rc)
             stack_s=f" {_st(f'[{st}]', fg=rc)}" if st else ''
             astr=""
             if asn:
@@ -696,7 +697,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
                     else: n=None
                     if n: ns.append(n)
                 if ns: astr=f" {_st('@'+','.join(ns), dim=True)}"
-            click.echo(f"  {_st('#'+str(card_id), fg=rc, bold=True)}{stack_s}{fstr}{counter} {title}{astr}")
+            click.echo(f"  {_st('#'+str(card_id), fg=rc, bold=True)}{stack_s}{fstr}{counter} {title}{(' '+lstr) if lstr else ''}{astr}")
             if du: ui_kv("Due", _fmt_ts(du), rc, label_width=10)
         return
     if labels_board:
@@ -892,8 +893,9 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
         if c.get('done'): flags.append(_st('DONE', fg='green'))
         fstr = (' ' + ' '.join(f'[{f}]' for f in flags)) if flags else ''
         counter = _card_counter(c)
+        lstr = _label_chips(c.get('labels') or [], ic)
         stack_s = f" {_st(f'[{st}]', fg=ic)}" if st else ''
-        click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr}{counter} {t}")
+        click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr}{counter} {t}{(' '+lstr) if lstr else ''}")
         if c.get('duedate'): ui_kv("Due", _fmt_ts(c['duedate']), ic, label_width=10)
 
 @cli.command("show")
@@ -917,8 +919,8 @@ def show_cmd(ctx,board_key,card_id,instance):
     if done_ts: ui_kv("Done at", _fmt_ts(done_ts), ic)
     ui_kv("Due", _fmt_ts(card.get('duedate')) if card.get('duedate') else 'None', ic)
     labels=card.get('labels') or []
-    ns=[l.get('title') or l.get('name') for l in labels if l.get('title') or l.get('name')] if labels else []
-    ui_kv("Labels", ', '.join(ns) if ns else 'None', ic)
+    lstr=_label_chips(labels, ic)
+    ui_kv("Labels", lstr if lstr else 'None', ic)
     asn=card.get('assignedUsers') or card.get('assignedusers') or []
     ans=[]
     for a in asn:
@@ -1171,6 +1173,33 @@ def _dependency_counter(ids):
         refs += ', …'
     return ' ' + _st(f'[🔗 {refs}]', dim=True)
 
+def _label_color(label):
+    """Return the label's Deck color as an ANSI/truecolor value, or None."""
+    if not isinstance(label, dict):
+        return None
+    c = label.get('color')
+    if not c:
+        return None
+    c = str(c).strip()
+    if not c:
+        return None
+    if not c.startswith('#'):
+        c = '#' + c
+    return _normalize_color(c, default=None)
+
+def _label_chips(labels, fallback_color='cyan'):
+    """Render labels as colored '[title]' chips."""
+    chips = []
+    for label in labels or []:
+        if not isinstance(label, dict):
+            continue
+        title = label.get('title') or label.get('name')
+        if not title:
+            continue
+        color = _label_color(label) or fallback_color
+        chips.append(_st(f'[{title}]', fg=color))
+    return ' '.join(chips)
+
 def _comment_counter(count):
     """Return a '[💬 n]' suffix, or '' when the card has no comments."""
     try:
@@ -1350,6 +1379,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                         'tasks_total': tt,
                         'comments': _card_comments_count(c),
                         'dependents': _card_dependent_ids(c),
+                        'labels': c.get('labels') or [],
                     })
     items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
     return items
@@ -1384,7 +1414,8 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards):
         counter = (_task_counter(it.get('tasks_done'), it.get('tasks_total'))
                    + _comment_counter(it.get('comments'))
                    + _dependency_counter(it.get('dependents')))
-        click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
+        lstr = _label_chips(it.get('labels') or [], ic)
+        click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
         ui_kv("Due", due_s, ic, label_width=10)
         ui_kv("Where", loc, ic, label_width=10)
         click.echo()

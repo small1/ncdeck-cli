@@ -402,6 +402,8 @@ ncdeck list --cards inbox --stack 5
 
 **Dependencies:** Cards that other cards depend on show `[🔗 #id, #id]` (from Deck's `dependentCards`). `ncdeck show` lists the dependent cards with their titles, stacks, and status.
 
+**Labels:** Labels are shown as colored `[Label]` chips in `list --cards`, `search`, `agenda`, and `show`, using each Deck label's own color.
+
 Supported task-list syntax:
 - Bullets `- [ ]`, `* [ ]`, `+ [ ]`, or numbered items `1. [ ]`
 - `[x]` / `[X]` counts as done; `[ ]` counts as open
