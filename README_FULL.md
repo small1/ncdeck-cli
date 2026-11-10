@@ -1,6 +1,6 @@
 # `ncdeck` - Nextcloud Deck CLI
 
-`ncdeck` is a lightweight command-line tool to create cards in [Nextcloud Deck](https://apps.nextcloud.com/apps/deck) directly from your terminal. It supports markdown descriptions, due dates, labels/tags by name, custom prefixes, reading from files, piping from stdin, marking cards as done, and moving cards between stacks.
+`ncdeck` is a lightweight command-line tool for creating and managing cards in [Nextcloud Deck](https://apps.nextcloud.com/apps/deck) directly from your terminal, across multiple Nextcloud instances. It supports markdown descriptions (inline, file, or stdin), due dates, labels/tags by name, custom prefixes, assignees, comments, and file attachments. Cards can be listed, searched, shown in full, marked as done, moved between stacks, and reviewed through a daily/weekly agenda. Listings surface task-list, comment, and dependency counters, colored labels, and prominent overdue/done status.
 
 ## Table of Contents
 
@@ -25,6 +25,11 @@
 - **Mark as done** - Mark cards as done and automatically move them to a configured done stack
 - **Move cards** - Move cards between any stacks on a board
 - **Archive cards** - Optionally archive cards instead of moving to done stack
+- **Comments, descriptions, and attachments** - Add comments, replace/amend descriptions, and attach files to existing cards
+- **Agenda and daily review** - `agenda today|tomorrow|week|month` (plus `-A` for all instances) and interactive `completed` to mark done or push cards to the next day
+- **Rich card listings** - Task/comment/dependency counters, colored label chips, and prominent overdue/done status in `list --cards`, `search`, `show`, and `agenda`
+- **Per-instance theme colors** - Auto-detected from Nextcloud theming, or set with `ncdeck config color`
+- **Shared-board filtering** - Show only cards assigned to you by default, or all cards with `--all`
 - **API version compatible** - Tries multiple endpoints when discovering labels across different Nextcloud Deck versions
 
 ## Requirements
@@ -74,9 +79,16 @@
    source ~/.bashrc
    ```
 
-3. **Create your config file**
+3. **Add an account (two ways)**
 
-   Copy the example config or see the [Configuration](#configuration) section below:
+   **Automatic — recommended and easiest.** `ncdeck account add` uses Nextcloud Login Flow v2, opens your browser to authenticate, then auto-discovers boards, stacks, labels (with colors), the done stack, and the theme color. It prompts for short names and merges everything into your config:
+   ```bash
+   ncdeck account add
+   # or pre-fill the server URL and short instance name
+   ncdeck account add --url https://cloud.example.com -i work
+   ```
+
+   **Manual.** Copy the example config and edit it yourself (see [Configuration](#configuration)):
    ```bash
    mkdir -p ~/.config/ncdeck
    cp config.example.yaml ~/.config/ncdeck/config.yaml
@@ -89,6 +101,11 @@
    ```
 
 ## Configuration
+
+There are two ways to configure accounts:
+
+1. **Automatic (primary and easiest):** run `ncdeck account add`. It authenticates via Login Flow v2 and discovers boards, stacks, labels, done stacks, and theme colors for you, then writes the config.
+2. **Manual:** write `config.yaml` yourself using [config.example.yaml](config.example.yaml) as a template.
 
 `ncdeck` looks for a config file in the following order:
 
@@ -142,7 +159,7 @@ instances:
 
 ### Finding board, stack, and label IDs
 
-If you don't know your IDs yet, use the `list` command:
+If you configured an account with `ncdeck account add`, these IDs were discovered for you. For manual configs, or to double-check them, use the `list` command:
 
 ```bash
 # List all boards visible to the user with their IDs
@@ -258,13 +275,13 @@ Usage: ncdeck labels [OPTIONS] BOARD_KEY
 ncdeck labels inbox
 
 # Refresh after adding/renaming labels in the Deck web UI
-ncdeck labels inbox --refresh -i mync
+ncdeck labels inbox --refresh -i work
 ```
 
 Example output:
 
 ```text
-Labels: mync/inbox (3)
+Labels: work/inbox (3)
 ────────────────────────────────────────
   • [bug] (id=5, color=FF7A66)
   • [critical] (id=12, color=31CC7C)
@@ -604,6 +621,34 @@ ncdeck create reviews "Review PR #42" -p "[REVIEW]" --due-date 2026-10-30
 ncdeck create inbox "Submit expense report" -p "[FINANCE]" --due-date 2026-11-05T09:00:00
 ```
 
+### Agenda and daily planning
+
+```bash
+# Cards due today on the default instance
+ncdeck agenda today
+
+# Tomorrow, the next 7 days, or the next 30 days
+ncdeck agenda tomorrow
+ncdeck agenda week
+ncdeck agenda month
+
+# All configured instances, or one specific instance
+ncdeck agenda today -A
+ncdeck agenda week -i work
+
+# Include unassigned cards on shared boards
+ncdeck agenda week --all
+
+# Interactive review: mark cards done, push the rest to the next day
+ncdeck completed
+ncdeck completed -A --archive
+
+# Bulk-archive done cards older than a date
+ncdeck archive inbox 2026-01-01 -y
+```
+
+`agenda` excludes done cards and highlights overdue ones in red. `completed` combines today's and overdue cards into one prompt.
+
 ### Adding tags/labels by name
 
 First, check the labels cached for your board (they are stored in config when the board is added):
@@ -640,6 +685,36 @@ ncdeck create bugs "Auth bypass attempt" -p "[SECURITY]" -t bug -t critical
 ```
 
 Tag matching is **case-insensitive**.
+
+### Inspecting and updating cards
+
+```bash
+# List cards in a board (counters, labels, due dates, overdue/done status)
+ncdeck list --cards inbox
+
+# Full details for one card, including description and comments
+ncdeck show inbox 123
+
+# Search titles and descriptions
+ncdeck search inbox "login"
+ncdeck search bugs "crash" --include-archived
+
+# Replace or amend a description
+ncdeck description inbox 123 "New description"
+ncdeck description inbox 123 --amend "Extra note"
+echo "From stdin" | ncdeck description inbox 123 --amend
+
+# Add a comment, or reply to one
+ncdeck comment inbox 123 "Waiting on QA"
+ncdeck comment inbox 123 "Any update?" --parent 7
+
+# Assign / unassign, attach a file, move, mark done
+ncdeck assign inbox 123 bob
+ncdeck assign inbox 123 bob --unassign
+ncdeck attach inbox 123 ./screenshot.png
+ncdeck move inbox 123 7
+ncdeck done inbox 123
+```
 
 ### Marking cards as done
 
