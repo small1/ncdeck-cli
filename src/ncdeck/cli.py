@@ -686,10 +686,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
             if card.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
             if card.get('done'): flags.append(_st('DONE', fg='green'))
             fstr=(' '+' '.join(f'[{f}]' for f in flags)) if flags else ''
-            td = card.get('_tasks_done'); tt = card.get('_tasks_total')
-            if tt is None:
-                td, tt = _task_list_counts(card.get('description') or '')
-            counter=_task_counter(td, tt)
+            counter=_card_counter(card)
             stack_s=f" {_st(f'[{st}]', fg=rc)}" if st else ''
             astr=""
             if asn:
@@ -894,10 +891,7 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
         if c.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
         if c.get('done'): flags.append(_st('DONE', fg='green'))
         fstr = (' ' + ' '.join(f'[{f}]' for f in flags)) if flags else ''
-        td = c.get('_tasks_done'); tt = c.get('_tasks_total')
-        if tt is None:
-            td, tt = _task_list_counts(c.get('description') or '')
-        counter = _task_counter(td, tt)
+        counter = _card_counter(c)
         stack_s = f" {_st(f'[{st}]', fg=ic)}" if st else ''
         click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr}{counter} {t}")
         if c.get('duedate'): ui_kv("Due", _fmt_ts(c['duedate']), ic, label_width=10)
@@ -1110,6 +1104,42 @@ def _task_counter(done, total):
     color = 'green' if done >= total else 'yellow'
     return ' ' + _st(f'[{done}/{total}]', fg=color, bold=(done >= total))
 
+def _card_comments_count(card):
+    """Return the card's comment count from common Deck field names."""
+    if not isinstance(card, dict):
+        return 0
+    for k in ('commentsCount', 'commentscount'):
+        v = card.get(k)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.strip().isdigit():
+            return int(v.strip())
+    return 0
+
+def _comment_counter(count):
+    """Return a '[💬 n]' suffix, or '' when the card has no comments."""
+    try:
+        count = int(count or 0)
+    except Exception:
+        return ''
+    if count <= 0:
+        return ''
+    return ' ' + _st(f'[💬 {count}]', dim=True)
+
+def _card_counter(card):
+    """Task counter if the card has a task list, otherwise comment counter."""
+    if not isinstance(card, dict):
+        return ''
+    td = card.get('_tasks_done'); tt = card.get('_tasks_total')
+    if tt is None:
+        td, tt = _task_list_counts(card.get('description') or '')
+    counter = _task_counter(td, tt)
+    if counter:
+        return counter
+    return _comment_counter(_card_comments_count(card))
+
 
 
 # ---- UI / theming ----
@@ -1266,6 +1296,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                         'id': c.get('id'),
                         'tasks_done': td,
                         'tasks_total': tt,
+                        'comments': _card_comments_count(c),
                     })
     items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
     return items
@@ -1299,7 +1330,7 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
         title = it['title']
         desc = _short_desc(it['desc'], desc_width)
         loc = f"{it['instance']}/{it['board']} / {it['stack']}"
-        counter = _task_counter(it.get('tasks_done'), it.get('tasks_total'))
+        counter = _task_counter(it.get('tasks_done'), it.get('tasks_total')) or _comment_counter(it.get('comments'))
         click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
         if desc:
             ui_kv("Desc", desc, ic, label_width=10)
