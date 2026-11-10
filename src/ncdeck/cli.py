@@ -683,8 +683,10 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
             card_id=card.get('id'); title=card.get('title') or '(untitled)'; st=card.get('_stack_title') or card.get('stackTitle') or ''
             du=card.get('duedate'); asn=card.get('assignedUsers') or card.get('assignedusers') or []
             flags=[]
+            is_overdue = _card_is_overdue(card, board)
             if card.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
-            if card.get('done'): flags.append(_st('DONE', fg='green'))
+            if is_overdue: flags.append(_overdue_flag())
+            if _card_is_done(card, board): flags.append(_st('DONE', fg='green'))
             fstr=(' '+' '.join(f'[{f}]' for f in flags)) if flags else ''
             counter=_card_counter(card)
             lstr=_label_chips(card.get('labels') or [], rc)
@@ -698,7 +700,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
                     if n: ns.append(n)
                 if ns: astr=f" {_st('@'+','.join(ns), dim=True)}"
             click.echo(f"  {_st('#'+str(card_id), fg=rc, bold=True)}{stack_s}{fstr}{counter} {title}{(' '+lstr) if lstr else ''}{astr}")
-            if du: ui_kv("Due", _fmt_ts(du), rc, label_width=10)
+            if du: ui_kv("Due", _st(_fmt_ts(du), fg='red', bold=True) if is_overdue else _fmt_ts(du), rc, label_width=10)
         return
     if labels_board:
         inst_name_res,inst_res,board=get_mapping(cfg,instance,labels_board)
@@ -931,14 +933,16 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
     for c in res:
         cid=c.get('id'); t=c.get('title') or '(untitled)'; st=c.get('_stack_title') or c.get('stackTitle') or ''
         flags = []
+        is_overdue = _card_is_overdue(c, board)
         if c.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
-        if c.get('done'): flags.append(_st('DONE', fg='green'))
+        if is_overdue: flags.append(_overdue_flag())
+        if _card_is_done(c, board): flags.append(_st('DONE', fg='green'))
         fstr = (' ' + ' '.join(f'[{f}]' for f in flags)) if flags else ''
         counter = _card_counter(c)
         lstr = _label_chips(c.get('labels') or [], ic)
         stack_s = f" {_st(f'[{st}]', fg=ic)}" if st else ''
         click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr}{counter} {t}{(' '+lstr) if lstr else ''}")
-        if c.get('duedate'): ui_kv("Due", _fmt_ts(c['duedate']), ic, label_width=10)
+        if c.get('duedate'): ui_kv("Due", _st(_fmt_ts(c['duedate']), fg='red', bold=True) if is_overdue else _fmt_ts(c['duedate']), ic, label_width=10)
 
 @cli.command("show")
 @click.argument("board_key")
@@ -956,10 +960,25 @@ def show_cmd(ctx,board_key,card_id,instance):
     ui_kv("Board", f"{inst_name}/{board_key}", ic)
     st=card.get('_stack_title') or card.get('stackTitle'); ui_kv("Stack", st if st else f"ID {card.get('stackId')}", ic)
     done_ts = card.get('done')
-    status = 'Archived' if card.get('archived') else ('Done' if done_ts else 'Active')
+    is_done = _card_is_done(card, board)
+    is_overdue = _card_is_overdue(card, board)
+    due_val = _fmt_ts(card.get('duedate')) if card.get('duedate') else 'None'
+    if card.get('archived'):
+        status = _st('Archived', fg='yellow', bold=True)
+    elif is_done:
+        status = _st('Done', fg='green', bold=True)
+    elif is_overdue:
+        status = _st('Overdue', fg='red', bold=True)
+    else:
+        status = 'Active'
     ui_kv("Status", status, ic)
-    if done_ts: ui_kv("Done at", _fmt_ts(done_ts), ic)
-    ui_kv("Due", _fmt_ts(card.get('duedate')) if card.get('duedate') else 'None', ic)
+    if done_ts:
+        ui_kv("Done at", _fmt_ts(done_ts), ic)
+    elif is_done:
+        ui_kv("Done at", _st('unknown (in done stack)', dim=True), ic)
+    ui_kv("Due", _st(due_val, fg='red', bold=True) if is_overdue else due_val, ic)
+    if is_overdue:
+        ui_kv("Overdue", _st(f'YES — {due_val}', fg='red', bold=True), ic)
     labels=card.get('labels') or []
     lstr=_label_chips(labels, ic)
     ui_kv("Labels", lstr if lstr else 'None', ic)
@@ -1020,7 +1039,7 @@ def show_cmd(ctx,board_key,card_id,instance):
             if dc:
                 dtitle = dc.get('title') or '(untitled)'
                 dst = dc.get('_stack_title') or dc.get('stackTitle') or f"stack {dc.get('stackId','?')}"
-                dstatus = 'Done' if dc.get('done') else ('Archived' if dc.get('archived') else 'Active')
+                dstatus = 'Done' if _card_is_done(dc, board) else ('Archived' if dc.get('archived') else 'Active')
                 click.echo(f"  {_st('#'+str(did), fg=ic, bold=True)} {_st(dtitle, bold=True)} {_st(f'[{dst}]', fg=ic)} {_st(dstatus, dim=True)}")
             else:
                 click.echo(f"  {_st('#'+str(did), fg=ic, bold=True)} {_st('(not found on this board)', dim=True)}")
@@ -1370,6 +1389,34 @@ def _board_is_shared(client, board_id, username):
         pass
     return False
 
+def _card_is_done(card, board=None):
+    """Return True when a card is done (done timestamp or in the done stack)."""
+    if not isinstance(card, dict):
+        return False
+    if card.get('done'):
+        return True
+    if isinstance(board, dict) and board.get('done_stack_id') is not None:
+        sid = card.get('_stack_id')
+        if sid is None:
+            sid = card.get('stackId')
+        try:
+            return int(sid) == int(board['done_stack_id'])
+        except (TypeError, ValueError):
+            return False
+    return False
+
+def _card_is_overdue(card, board=None):
+    """Return True when an open card has a due date in the past."""
+    if not isinstance(card, dict):
+        return False
+    if card.get('archived') or _card_is_done(card, board):
+        return False
+    dd = _parse_duedate(card.get('duedate'))
+    return bool(dd and dd < datetime.now(timezone.utc))
+
+def _overdue_flag():
+    return _st('OVERDUE', fg='red', bold=True)
+
 def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, include_done=True, all_cards=False):
     items = []
     if all_instances:
@@ -1397,7 +1444,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                     filter_username = uname
             for c in cards:
                 if c.get('archived'): continue
-                if not include_done and c.get('done'):
+                if not include_done and _card_is_done(c, bval):
                     continue
                 if filter_username and not _card_assigned_to(c, filter_username):
                     continue
@@ -1422,6 +1469,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                         'comments': _card_comments_count(c),
                         'dependents': _card_dependent_ids(c),
                         'labels': c.get('labels') or [],
+                        'overdue': _card_is_overdue(c, bval),
                     })
     items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
     return items
@@ -1457,8 +1505,9 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards):
                    + _comment_counter(it.get('comments'))
                    + _dependency_counter(it.get('dependents')))
         lstr = _label_chips(it.get('labels') or [], ic)
-        click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
-        ui_kv("Due", due_s, ic, label_width=10)
+        marker = _overdue_flag() + ' ' if it.get('overdue') else ''
+        click.echo(f"  {_st('●', fg=ic)} {marker}{_st(title, bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
+        ui_kv("Due", _st(due_s, fg='red', bold=True) if it.get('overdue') else due_s, ic, label_width=10)
         ui_kv("Where", loc, ic, label_width=10)
         click.echo()
     ui_dim(f"Total: {len(items)} card(s)")

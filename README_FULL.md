@@ -446,6 +446,8 @@ ncdeck list --cards inbox --stack 5
 
 **Labels:** Labels are shown as colored `[Label]` chips in `list --cards`, `search`, `agenda`, and `show`, using each Deck label's own color.
 
+**Overdue and done status:** Open cards with a due date in the past show a red `[OVERDUE]` flag in `list --cards` and `search`, with the due date in red. Cards in the configured done stack show `[DONE]`. In `agenda`, overdue cards are prefixed with a red `OVERDUE` marker and the due line is red.
+
 Supported task-list syntax:
 - Bullets `- [ ]`, `* [ ]`, `+ [ ]`, or numbered items `1. [ ]`
 - `[x]` / `[X]` counts as done; `[ ]` counts as open
@@ -513,7 +515,7 @@ Usage: ncdeck show [OPTIONS] BOARD_KEY CARD_ID
 ncdeck show inbox 123
 ```
 
-**Output includes:** Card ID and title, board/instance, stack, status (active/archived), due date, labels, assignees, created/modified timestamps, dependent cards, full description, and the card's comments (author, timestamp, and message).
+**Output includes:** Card ID and title, board/instance, stack, status (active/done/overdue/archived), done timestamp (or an indication that the card is in the done stack without a timestamp), due date, labels, assignees, created/modified timestamps, dependent cards, full description, and the card's comments (author, timestamp, and message).
 
 ## Usage Examples
 
