@@ -396,6 +396,12 @@ ncdeck list --cards inbox
 ncdeck list --cards inbox --stack 5
 ```
 
+**Markdown task-list counters:** Cards whose descriptions contain Markdown task-list items are annotated with a `[done/total]` counter next to the card (green when every item is done). The same counter appears in `ncdeck agenda` and `ncdeck search`.
+
+Supported task-list syntax:
+- Bullets `- [ ]`, `* [ ]`, `+ [ ]`, or numbered items `1. [ ]`
+- `[x]` / `[X]` counts as done; `[ ]` counts as open
+
 ### `ncdeck search`
 
 Search for cards containing a keyword or string in title or description (case-insensitive).

@@ -76,7 +76,7 @@ class DeckClient:
         for k in ('ETag', 'lastModified', 'lastEditor', 'createdAt', 'deletedAt',
                   'attachments', 'attachmentCount', 'commentsCount', 'commentsUnread',
                   'permissions', 'relatedStack', 'relatedBoard', 'overdue', 'id',
-                  'notified', 'deletedAt'):
+                  'notified', 'deletedAt', '_tasks_done', '_tasks_total'):
             payload.pop(k, None)
         # Normalize owner to uid string if object
         o = payload.get('owner')
@@ -152,7 +152,7 @@ class DeckClient:
                 sc = stack.get('cards') or []
                 for c in sc: c['_stack_title']=stack.get('title'); c['_stack_id']=stack.get('id')
                 cards.extend(sc)
-            if cards: return cards
+            if cards: return _annotate_task_counts(cards)
         except: pass
         try:
             board = self.get_board(board_id)
@@ -163,7 +163,7 @@ class DeckClient:
                         sc=stack.get('cards') or []
                         for c in sc: c['_stack_title']=stack.get('title'); c['_stack_id']=stack.get('id')
                         cards.extend(sc)
-                return cards
+                return _annotate_task_counts(cards)
         except: pass
         return []
     def get_card(self, board_id, card_id): return self._get(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/-1/cards/{card_id}")
@@ -686,6 +686,10 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
             if card.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
             if card.get('done'): flags.append(_st('DONE', fg='green'))
             fstr=(' '+' '.join(f'[{f}]' for f in flags)) if flags else ''
+            td = card.get('_tasks_done'); tt = card.get('_tasks_total')
+            if tt is None:
+                td, tt = _task_list_counts(card.get('description') or '')
+            counter=_task_counter(td, tt)
             stack_s=f" {_st(f'[{st}]', fg=rc)}" if st else ''
             astr=""
             if asn:
@@ -695,7 +699,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
                     else: n=None
                     if n: ns.append(n)
                 if ns: astr=f" {_st('@'+','.join(ns), dim=True)}"
-            click.echo(f"  {_st('#'+str(card_id), fg=rc, bold=True)}{stack_s}{fstr} {title}{astr}")
+            click.echo(f"  {_st('#'+str(card_id), fg=rc, bold=True)}{stack_s}{fstr}{counter} {title}{astr}")
             if du: ui_kv("Due", _fmt_ts(du), rc, label_width=10)
         return
     if labels_board:
@@ -890,8 +894,12 @@ def search_cmd(ctx,board_key,query,instance,stack,include_archived,all_cards):
         if c.get('archived'): flags.append(_st('ARCHIVED', fg='yellow'))
         if c.get('done'): flags.append(_st('DONE', fg='green'))
         fstr = (' ' + ' '.join(f'[{f}]' for f in flags)) if flags else ''
+        td = c.get('_tasks_done'); tt = c.get('_tasks_total')
+        if tt is None:
+            td, tt = _task_list_counts(c.get('description') or '')
+        counter = _task_counter(td, tt)
         stack_s = f" {_st(f'[{st}]', fg=ic)}" if st else ''
-        click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr} {t}")
+        click.echo(f"  {_st('#'+str(cid), fg=ic, bold=True)}{stack_s}{fstr}{counter} {t}")
         if c.get('duedate'): ui_kv("Due", _fmt_ts(c['duedate']), ic, label_width=10)
 
 @cli.command("show")
@@ -1066,6 +1074,43 @@ def _short_desc(text, width=50):
     return t[:width-1] + '…'
 
 
+# ---- Markdown task lists ----
+_TASK_ITEM_RE = re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\](?=\s|$)', re.MULTILINE)
+
+def _task_list_counts(text):
+    """Return (done, total) markdown task-list items in a description."""
+    if not text:
+        return (0, 0)
+    done = 0
+    total = 0
+    for m in _TASK_ITEM_RE.finditer(str(text)):
+        total += 1
+        if m.group(1).lower() == 'x':
+            done += 1
+    return done, total
+
+def _annotate_task_counts(cards):
+    """Attach _tasks_done/_tasks_total to each card based on its description."""
+    for c in cards:
+        if isinstance(c, dict):
+            d, t = _task_list_counts(c.get('description') or '')
+            c['_tasks_done'] = d
+            c['_tasks_total'] = t
+    return cards
+
+def _task_counter(done, total):
+    """Return a colored '[done/total]' suffix, or '' when there are no tasks."""
+    try:
+        done = int(done or 0)
+        total = int(total or 0)
+    except Exception:
+        return ''
+    if total <= 0:
+        return ''
+    color = 'green' if done >= total else 'yellow'
+    return ' ' + _st(f'[{done}/{total}]', fg=color, bold=(done >= total))
+
+
 
 # ---- UI / theming ----
 def _normalize_color(c, default='cyan'):
@@ -1208,6 +1253,9 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                 ddl = dd.astimezone()
                 if start <= ddl < end:
                     st = c.get('_stack_title') or c.get('stackTitle') or f"stack {c.get('stackId','?')}"
+                    td = c.get('_tasks_done'); tt = c.get('_tasks_total')
+                    if tt is None:
+                        td, tt = _task_list_counts(c.get('description') or '')
                     items.append({
                         'due': ddl,
                         'title': c.get('title') or '(untitled)',
@@ -1216,6 +1264,8 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                         'board': bkey,
                         'stack': st,
                         'id': c.get('id'),
+                        'tasks_done': td,
+                        'tasks_total': tt,
                     })
     items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
     return items
@@ -1249,7 +1299,8 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
         title = it['title']
         desc = _short_desc(it['desc'], desc_width)
         loc = f"{it['instance']}/{it['board']} / {it['stack']}"
-        click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)} {_st(f'(#{it["id"]})', fg=ic)}")
+        counter = _task_counter(it.get('tasks_done'), it.get('tasks_total'))
+        click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
         if desc:
             ui_kv("Desc", desc, ic, label_width=10)
         ui_kv("Due", due_s, ic, label_width=10)
