@@ -400,6 +400,8 @@ ncdeck list --cards inbox --stack 5
 
 **Comment counter:** Cards with comments show `[💬 n]`. If a card has both a task list and comments, both counters are shown (for example `[1/3] [💬 2]`).
 
+**Dependencies:** Cards that other cards depend on show `[🔗 #id, #id]` (from Deck's `dependentCards`). `ncdeck show` lists the dependent cards with their titles, stacks, and status.
+
 Supported task-list syntax:
 - Bullets `- [ ]`, `* [ ]`, `+ [ ]`, or numbered items `1. [ ]`
 - `[x]` / `[X]` counts as done; `[ ]` counts as open
@@ -467,7 +469,7 @@ Usage: ncdeck show [OPTIONS] BOARD_KEY CARD_ID
 ncdeck show inbox 123
 ```
 
-**Output includes:** Card ID and title, board/instance, stack, status (active/archived), due date, labels, assignees, created/modified timestamps, full description, and the card's comments (author, timestamp, and message).
+**Output includes:** Card ID and title, board/instance, stack, status (active/archived), due date, labels, assignees, created/modified timestamps, dependent cards, full description, and the card's comments (author, timestamp, and message).
 
 ## Usage Examples
 

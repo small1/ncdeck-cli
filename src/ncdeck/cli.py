@@ -907,6 +907,7 @@ def show_cmd(ctx,board_key,card_id,instance):
     cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     card=client.get_card_full(board["board_id"],card_id)
     ic = _inst_color(inst)
+    deps = _card_dependent_ids(card)
     ui_header(f"Card #{card.get('id')}: {card.get('title')}", ic)
     ui_kv("Board", f"{inst_name}/{board_key}", ic)
     st=card.get('_stack_title') or card.get('stackTitle'); ui_kv("Stack", st if st else f"ID {card.get('stackId')}", ic)
@@ -927,6 +928,7 @@ def show_cmd(ctx,board_key,card_id,instance):
     ui_kv("Assignees", ', '.join(ans) if ans else 'None', ic)
     ui_kv("Created", _fmt_ts(card.get('createdAt')), ic)
     ui_kv("Modified", _fmt_ts(card.get('lastModified')), ic)
+    if deps: ui_kv("Dependents", ', '.join(f'#{i}' for i in deps), ic)
     ui_sep(ic)
     click.echo(_st("  Description", fg=ic, bold=True))
     click.echo(f"  {card.get('description') or '(empty)'}")
@@ -961,6 +963,23 @@ def show_cmd(ctx,board_key,card_id,instance):
             for line in (msg.splitlines() or ['']):
                 click.echo(f"    {line}")
             click.echo()
+    if deps:
+        ui_sep(ic)
+        click.echo(_st("  Dependent cards", fg=ic, bold=True))
+        try:
+            dep_cards = {c.get('id'): c for c in client.list_cards(board['board_id'])}
+        except Exception as e:
+            dep_cards = {}
+            if debug: click.echo(f"[DEBUG] dependent cards fetch failed: {e}", err=True)
+        for did in deps:
+            dc = dep_cards.get(did)
+            if dc:
+                dtitle = dc.get('title') or '(untitled)'
+                dst = dc.get('_stack_title') or dc.get('stackTitle') or f"stack {dc.get('stackId','?')}"
+                dstatus = 'Done' if dc.get('done') else ('Archived' if dc.get('archived') else 'Active')
+                click.echo(f"  {_st('#'+str(did), fg=ic, bold=True)} {_st(dtitle, bold=True)} {_st(f'[{dst}]', fg=ic)} {_st(dstatus, dim=True)}")
+            else:
+                click.echo(f"  {_st('#'+str(did), fg=ic, bold=True)} {_st('(not found on this board)', dim=True)}")
     ui_sep(ic)
 
 def _fmt_ts(v):
@@ -1118,6 +1137,40 @@ def _card_comments_count(card):
             return int(v.strip())
     return 0
 
+def _card_dependent_ids(card):
+    """Return the IDs of cards that depend on this card (Deck dependentCards)."""
+    if not isinstance(card, dict):
+        return []
+    raw = card.get('dependentCards')
+    if raw is None:
+        raw = card.get('dependentcards')
+    if not isinstance(raw, (list, tuple)):
+        return []
+    ids = []
+    seen = set()
+    for v in raw:
+        if isinstance(v, dict):
+            v = v.get('id')
+        try:
+            i = int(v)
+        except Exception:
+            continue
+        if i not in seen:
+            seen.add(i)
+            ids.append(i)
+    return ids
+
+def _dependency_counter(ids):
+    """Return a '[🔗 #1, #2]' suffix, or '' when there are no dependents."""
+    ids = ids or []
+    if not ids:
+        return ''
+    shown = ids[:5]
+    refs = ', '.join(f'#{i}' for i in shown)
+    if len(ids) > len(shown):
+        refs += ', …'
+    return ' ' + _st(f'[🔗 {refs}]', dim=True)
+
 def _comment_counter(count):
     """Return a '[💬 n]' suffix, or '' when the card has no comments."""
     try:
@@ -1129,13 +1182,15 @@ def _comment_counter(count):
     return ' ' + _st(f'[💬 {count}]', dim=True)
 
 def _card_counter(card):
-    """Return task and/or comment counters for a card."""
+    """Return task, comment, and dependency counters for a card."""
     if not isinstance(card, dict):
         return ''
     td = card.get('_tasks_done'); tt = card.get('_tasks_total')
     if tt is None:
         td, tt = _task_list_counts(card.get('description') or '')
-    return _task_counter(td, tt) + _comment_counter(_card_comments_count(card))
+    return (_task_counter(td, tt)
+            + _comment_counter(_card_comments_count(card))
+            + _dependency_counter(_card_dependent_ids(card)))
 
 
 
@@ -1294,6 +1349,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
                         'tasks_done': td,
                         'tasks_total': tt,
                         'comments': _card_comments_count(c),
+                        'dependents': _card_dependent_ids(c),
                     })
     items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
     return items
@@ -1325,7 +1381,9 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards):
         due_s = it['due'].strftime('%a %Y-%m-%d %H:%M')
         title = it['title']
         loc = f"{it['instance']}/{it['board']} / {it['stack']}"
-        counter = _task_counter(it.get('tasks_done'), it.get('tasks_total')) + _comment_counter(it.get('comments'))
+        counter = (_task_counter(it.get('tasks_done'), it.get('tasks_total'))
+                   + _comment_counter(it.get('comments'))
+                   + _dependency_counter(it.get('dependents')))
         click.echo(f"  {_st('●', fg=ic)} {_st(title, bold=True)}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
         ui_kv("Due", due_s, ic, label_width=10)
         ui_kv("Where", loc, ic, label_width=10)
