@@ -1108,7 +1108,7 @@ def agenda_cmd(ctx, period, instance, all_instances, all_cards, desc_width):
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
     start, end, p = _agenda_range(period)
-    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, all_cards=all_cards)
+    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False, all_cards=all_cards)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     hc = 'cyan' if all_instances else _inst_color(cfg.get('instances',{}).get(scope))
     header = f"Agenda: {p}  ({start.strftime('%Y-%m-%d')} → {(end - timedelta(seconds=1)).strftime('%Y-%m-%d')})  [{scope}]"
