@@ -1550,12 +1550,15 @@ def _normalize_create_duedate(s):
 
 def _agenda_range(period):
     """Compute the start/end datetimes for an agenda period.
-    Why: today/tomorrow/week/month share the same boundary logic.
+    Why: yesterday/today/tomorrow/week/month share the same boundary logic.
     """
     now = datetime.now().astimezone()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     p = (period or 'today').lower()
-    if p == 'today':
+    if p == 'yesterday':
+        end = start
+        start = start - timedelta(days=1)
+    elif p == 'today':
         end = start + timedelta(days=1)
     elif p == 'tomorrow':
         start = start + timedelta(days=1)
@@ -1565,7 +1568,7 @@ def _agenda_range(period):
     elif p == 'month':
         end = start + timedelta(days=30)
     else:
-        raise click.ClickException(f"Unknown period '{period}'. Use: today, tomorrow, week, month")
+        raise click.ClickException(f"Unknown period '{period}'. Use: yesterday, today, tomorrow, week, month")
     return start, end, p
 
 def _short_desc(text, width=50):
@@ -1984,7 +1987,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
     return items
 
 # ---- Agenda, daily review and bulk archive ----
-@cli.command("agenda", help="Show cards by due date (today, tomorrow, week, month).")
+@cli.command("agenda", help="Show cards by due date (yesterday, today, tomorrow, week, month).")
 @click.argument("period", default="today", required=False)
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
@@ -1992,7 +1995,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
 @click.pass_context
 def agenda_cmd(ctx, period, instance, all_instances, all_cards):
     """Show cards due within a period.
-    Why: daily/weekly planning without opening the web UI.
+    Why: daily/weekly planning, plus catching items left over from yesterday.
     """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()

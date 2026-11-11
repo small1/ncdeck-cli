@@ -26,7 +26,7 @@
 - **Move cards** - Move cards between any stacks on a board
 - **Archive cards** - Optionally archive cards instead of moving to done stack
 - **Comments, descriptions, and attachments** - Add comments, replace/amend descriptions, and attach files to existing cards
-- **Agenda and daily review** - `agenda today|tomorrow|week|month` (plus `-A` for all instances) and interactive `completed` to mark done or push cards to the next day
+- **Agenda and daily review** - `agenda yesterday|today|tomorrow|week|month` (plus `-A` for all instances) and interactive `completed` to mark done or push cards to the next day
 - **Rich card listings** - Task/comment/dependency counters, colored label chips, and prominent overdue/done status in `list --cards`, `search`, `show`, and `agenda`
 - **Per-instance theme colors** - Auto-detected from Nextcloud theming, or set with `ncdeck config color`
 - **Shared-board filtering** - Show only cards assigned to you by default, or all cards with `--all`
@@ -630,6 +630,9 @@ ncdeck create inbox "Submit expense report" -p "[FINANCE]" --due-date 2026-11-05
 ### Agenda and daily planning
 
 ```bash
+# Review what was due yesterday - useful for cards you forgot to close or move
+ncdeck agenda yesterday
+
 # Cards due today on the default instance
 ncdeck agenda today
 
@@ -653,7 +656,7 @@ ncdeck completed -A --archive
 ncdeck archive inbox 2026-01-01 -y
 ```
 
-`agenda` excludes done cards and highlights overdue ones in red. `completed` combines today's and overdue cards into one prompt.
+`agenda` excludes done cards and highlights overdue ones in red; `agenda yesterday` is a quick way to find cards that slipped through. `completed` combines today's and overdue cards into one prompt.
 
 ### Adding tags/labels by name
 

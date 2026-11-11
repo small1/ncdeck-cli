@@ -7,7 +7,7 @@ A lightweight CLI for [Nextcloud Deck](https://apps.nextcloud.com/apps/deck) tha
 - **Create rich cards** — titles with prefixes, due dates (`today`, `tomorrow`, `2026-11-11`, or full timestamps), tags by name, descriptions from inline text / files / stdin, assignees, and file attachments.
 - **Work with existing cards** — mark done (and move to a done stack), move between stacks, assign/unassign users, add comments, set or amend descriptions, and attach files.
 - **See everything at a glance** — `list --cards`, `search`, and `show` display assignees, due dates, colored label chips, task-list counters (`[done/total]`), comment counters (`[💬 n]`), dependencies (`[🔗 #id]`), and prominent `OVERDUE` / `DONE` status. In a terminal, `show` also renders descriptions and comments as Markdown (use `--raw` for the source).
-- **Plan your day** — `agenda today|tomorrow|week|month` (with `-A` for all instances) and the interactive `completed` review that marks cards done or pushes the rest to the next day.
+- **Plan your day** — `agenda yesterday|today|tomorrow|week|month` (with `-A` for all instances) and the interactive `completed` review that marks cards done or pushes the rest to the next day.
 - **Multiple instances** — one config, short board/instance names, per-instance theme colors, cached labels (with colors), and shared-board filtering.
 - **Bulk cleanup** — `archive BOARD BEFORE_DATE` to archive old done cards.
 
@@ -102,6 +102,9 @@ ncdeck done inbox 123
 ### Agenda and planning
 
 ```bash
+# Review what was due yesterday (handy for items you forgot to close or move)
+ncdeck agenda yesterday
+
 # Due today on the default instance
 ncdeck agenda today
 
