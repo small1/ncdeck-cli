@@ -2,6 +2,8 @@
 
 `ncdeck` is a lightweight command-line tool for creating and managing cards in [Nextcloud Deck](https://apps.nextcloud.com/apps/deck) directly from your terminal, across multiple Nextcloud instances. It supports markdown descriptions (inline, file, or stdin), due dates, labels/tags by name, custom prefixes, assignees, comments, and file attachments. Cards can be listed, searched, shown in full, marked as done, moved between stacks, and reviewed through a daily/weekly agenda. Listings surface task-list, comment, and dependency counters, colored labels, and prominent overdue/done status.
 
+> **See it in action:** the [showcase in README.md](README.md#showcase) has screenshots of the agenda, card details, and Markdown rendering.
+
 ## Table of Contents
 
 - [Features](#features)

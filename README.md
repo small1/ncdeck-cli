@@ -2,6 +2,28 @@
 
 A lightweight CLI for [Nextcloud Deck](https://apps.nextcloud.com/apps/deck) that lets you create and manage cards across multiple Nextcloud instances without leaving the terminal.
 
+## Showcase
+
+A few glimpses of `ncdeck` in action (captured in [Ghostty](https://ghostty.org/)).
+
+### Agenda across every instance
+
+`ncdeck agenda -A 2026-11-25 2026-11-30` — colored labels, task-list counters, comment counters, dependency links, due dates, and a distinct color per instance.
+
+<img src="Screenshots/screenshot-2026-11-11_12-19-18-ghostty.png" alt="Agenda across all instances" width="760">
+
+### Create, complete, inspect
+
+`ncdeck create`, `ncdeck done`, and `ncdeck show` — a card's details, labels, assignees, and its comment thread.
+
+<img src="Screenshots/screenshot-2026-11-11_12-22-54-ghostty.png" alt="Create, done and show" width="760">
+
+### Rich card details
+
+`ncdeck show` renders Markdown descriptions (headings, checklists, links), lists dependent cards, and `ncdeck comment` adds to the conversation.
+
+<img src="Screenshots/screenshot-2026-11-11_12-24-23-ghostty.png" alt="Rendered Markdown card details" width="760">
+
 ## What it can do
 
 - **Create rich cards** — titles with prefixes, due dates (`today`, `tomorrow`, `2026-11-11`, or full timestamps), tags by name, descriptions from inline text / files / stdin, assignees, and file attachments.
