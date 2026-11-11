@@ -27,7 +27,7 @@
 - **Move cards** - Move cards between any stacks on a board
 - **Archive cards** - Optionally archive cards instead of moving to done stack
 - **Comments, descriptions, and attachments** - Add comments, replace/amend descriptions, and attach files to existing cards
-- **Agenda and daily review** - `agenda yesterday|today|tomorrow|week|month` (plus `-A` for all instances) and interactive `completed` to mark done or push cards to the next day
+- **Agenda and daily review** - `agenda yesterday|today|tomorrow|week|month`, an absolute `YYYY-MM-DD` date, or a `START END` range (plus `-A` for all instances), and interactive `completed` to mark done or push cards to the next day
 - **Rich card listings** - Task/comment/dependency counters, colored label chips, and prominent overdue/done status in `list --cards`, `search`, `show`, and `agenda`
 - **Per-instance theme colors** - Auto-detected from Nextcloud theming, or set with `ncdeck config color`
 - **Shared-board filtering** - Show only cards assigned to you by default, or all cards with `--all`
@@ -622,6 +622,34 @@ ncdeck show inbox 123 --raw
 
 **Output includes:** Card ID and title, board/instance, stack, status (active/done/overdue/archived), done timestamp (or an indication that the card is in the done stack without a timestamp), due date, labels, assignees, created/modified timestamps, dependent cards, full description, and the card's comments (author, timestamp, and message).
 
+### `ncdeck agenda`
+
+Show cards by due date. The first argument is either a relative period or an absolute date; a second date creates an inclusive range.
+
+```text
+Usage: ncdeck agenda [OPTIONS] [PERIOD] [END_DATE]
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `PERIOD` | No | `yesterday`, `today` (default), `tomorrow`, `week`, `month`, or `YYYY-MM-DD`. |
+| `END_DATE` | No | `YYYY-MM-DD`. Only valid together with a start date; the range is inclusive. |
+
+| Option | Description |
+| --- | --- |
+| `-i, --instance TEXT` | Use a specific instance. |
+| `-A, --all-instances` | Combine all configured instances. |
+| `--all` | Include unassigned cards on shared boards. |
+
+```bash
+ncdeck agenda today
+ncdeck agenda 2026-11-15                 # one specific day
+ncdeck agenda 2026-11-10 2026-11-20     # inclusive range
+ncdeck agenda 2026-11-15 -A             # same day across every instance
+```
+
+`agenda` excludes done cards and highlights overdue ones in red. Dates are interpreted in your local timezone.
+
 ## Usage Examples
 
 ### Basic card creation
@@ -679,6 +707,10 @@ ncdeck agenda tomorrow
 ncdeck agenda week
 ncdeck agenda month
 
+# An exact date, or an inclusive date range
+ncdeck agenda 2026-11-15
+ncdeck agenda 2026-11-10 2026-11-20
+
 # All configured instances, or one specific instance
 ncdeck agenda today -A
 ncdeck agenda week -i work
@@ -694,7 +726,7 @@ ncdeck completed -A --archive
 ncdeck archive inbox 2026-01-01 -y
 ```
 
-`agenda` excludes done cards and highlights overdue ones in red; `agenda yesterday` is a quick way to find cards that slipped through. `completed` combines today's and overdue cards into one prompt.
+`agenda` excludes done cards and highlights overdue ones in red; `agenda yesterday` or `agenda YYYY-MM-DD` is a quick way to find cards that slipped through. Dates are local, and a `START END` pair gives an inclusive range. `completed` combines today's and overdue cards into one prompt.
 
 ### Adding tags/labels by name
 

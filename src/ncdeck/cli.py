@@ -1707,12 +1707,38 @@ def _normalize_create_duedate(s):
     # Fallback: return as-is
     return raw
 
-def _agenda_range(period):
-    """Compute the start/end datetimes for an agenda period.
-    Why: yesterday/today/tomorrow/week/month share the same boundary logic.
+def _parse_agenda_date(s, label='date'):
+    """Parse a YYYY-MM-DD string into a local-midnight datetime, or None.
+    Why: explicit dates must mean the user's local calendar day, not a UTC day.
+    """
+    if not s:
+        return None
+    raw = str(s).strip()
+    # Anything that is not date-shaped is a relative period keyword, not a date.
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', raw):
+        return None
+    try:
+        d = datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        raise click.ClickException(f"Invalid {label} '{raw}'. Use YYYY-MM-DD.")
+    local_tz = datetime.now().astimezone().tzinfo
+    return datetime(d.year, d.month, d.day, tzinfo=local_tz)
+
+def _agenda_range(period, start_date=None, end_date=None):
+    """Compute the start/end datetimes for a period or an explicit date range.
+    Why: relative periods and absolute dates share the same boundary logic.
     """
     now = datetime.now().astimezone()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if start_date is not None:
+        start = start_date
+        if end_date is not None:
+            end = end_date + timedelta(days=1)
+            p = 'range'
+        else:
+            end = start + timedelta(days=1)
+            p = start.strftime('%Y-%m-%d')
+        return start, end, p
     p = (period or 'today').lower()
     if p == 'yesterday':
         end = start
@@ -1727,7 +1753,7 @@ def _agenda_range(period):
     elif p == 'month':
         end = start + timedelta(days=30)
     else:
-        raise click.ClickException(f"Unknown period '{period}'. Use: yesterday, today, tomorrow, week, month")
+        raise click.ClickException(f"Unknown period '{period}'. Use: yesterday, today, tomorrow, week, month, or YYYY-MM-DD")
     return start, end, p
 
 def _short_desc(text, width=50):
@@ -2146,21 +2172,35 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
     return items
 
 # ---- Agenda, daily review and bulk archive ----
-@cli.command("agenda", help="Show cards by due date (yesterday, today, tomorrow, week, month).")
+@cli.command("agenda", help="Show cards by due date (period, YYYY-MM-DD, or a date range).")
 @click.argument("period", default="today", required=False)
+@click.argument("end_date", required=False)
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
 @click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.pass_context
-def agenda_cmd(ctx, period, instance, all_instances, all_cards):
-    """Show cards due within a period.
-    Why: daily/weekly planning, plus catching items left over from yesterday.
+def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards):
+    """Show cards due within a relative period or an explicit date range.
+    Why: daily planning, catching leftover days, and looking up arbitrary dates.
     """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
-    start, end, p = _agenda_range(period)
+    start_date = _parse_agenda_date(period, 'date')
+    if start_date is not None:
+        end_dt = None
+        if end_date:
+            end_dt = _parse_agenda_date(end_date, 'END_DATE')
+            if end_dt is None:
+                raise click.ClickException(f"Invalid END_DATE '{end_date}'. Use YYYY-MM-DD.")
+        if end_dt is not None and end_dt < start_date:
+            raise click.ClickException("END_DATE must not be before the start date")
+        start, end, p = _agenda_range(period, start_date=start_date, end_date=end_dt)
+    else:
+        if end_date:
+            raise click.ClickException("END_DATE can only be used together with a start date (YYYY-MM-DD)")
+        start, end, p = _agenda_range(period)
     items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False, all_cards=all_cards)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     hc = 'cyan' if all_instances else _inst_color(cfg.get('instances',{}).get(scope))
