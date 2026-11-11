@@ -549,16 +549,88 @@ class DeckClient:
         raise Exception("Failed to upload attachment")
 
 # ---- Shared config and input helpers ----
-def get_mapping(cfg, instance_name: Optional[str], board_key: str):
-    """Resolve instance and board config for a short board key.
-    Why: every command uses the same lookup and friendly error messages.
+def _clean_alias(raw):
+    """Return a sanitized alias string, or None when blank.
+    Why: aliases are typed as CLI arguments, so keep them short and shell-safe.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    cleaned = ''.join(c if c.isalnum() or c in ('_', '-') else '_' for c in s)
+    return cleaned.strip('_') or None
+
+def _board_aliases(board):
+    """Return a board's alias strings, preserving their configured casing.
+    Why: config may use a single `alias` or an `aliases` list; one accessor serves both.
+    """
+    if not isinstance(board, dict):
+        return []
+    raw = []
+    single = board.get('alias')
+    if isinstance(single, str) and single.strip():
+        raw.append(single.strip())
+    many = board.get('aliases')
+    if isinstance(many, (list, tuple)):
+        for a in many:
+            if isinstance(a, str) and a.strip():
+                raw.append(a.strip())
+    out = []
+    for a in raw:
+        if a.lower() not in [x.lower() for x in out]:
+            out.append(a)
+    return out
+
+def _alias_conflicts(boards, alias, exclude_key=None):
+    """Describe a conflicting board key/alias, or return None.
+    Why: an alias must resolve to exactly one board within its instance.
+    """
+    needle = alias.lower()
+    for key, board in (boards or {}).items():
+        if exclude_key is not None and key == exclude_key:
+            continue
+        if key.lower() == needle:
+            return f"board key '{key}'"
+        for existing in _board_aliases(board):
+            if existing.lower() == needle:
+                return f"alias of '{key}'"
+    return None
+
+def _resolve_board_key(inst, board_key, inst_name=None):
+    """Return (canonical_key, board) for a board key or one of its aliases.
+    Why: short aliases such as DW should work anywhere a board key is accepted.
+    """
+    boards = inst.get('boards') or {}
+    if board_key in boards:
+        return board_key, boards[board_key]
+    needle = str(board_key).strip().lower()
+    matches = [(k, b) for k, b in boards.items()
+               if any(a.lower() == needle for a in _board_aliases(b))]
+    suffix = f" for instance '{inst_name}'" if inst_name else ""
+    if not matches:
+        raise click.ClickException(f"Board mapping '{board_key}' not found{suffix}")
+    if len(matches) > 1:
+        keys = ', '.join(k for k, _ in matches)
+        raise click.ClickException(f"Board alias '{board_key}' is ambiguous{suffix} (matches: {keys})")
+    return matches[0]
+
+def get_mapping_full(cfg, instance_name: Optional[str], board_key: str):
+    """Resolve instance/board config and also return the canonical board key.
+    Why: alias lookups must still write cached data under the real config key.
     """
     inst_name = instance_name or cfg.get("default_instance")
     if not inst_name: raise click.ClickException("No instance specified and no default_instance in config")
     try: inst = cfg["instances"][inst_name]
     except KeyError: raise click.ClickException(f"Instance '{inst_name}' not found in config")
-    try: board = inst["boards"][board_key]
-    except KeyError: raise click.ClickException(f"Board mapping '{board_key}' not found for instance '{inst_name}'")
+    canonical, board = _resolve_board_key(inst, board_key, inst_name)
+    return inst_name, inst, board, canonical
+
+def get_mapping(cfg, instance_name: Optional[str], board_key: str):
+    """Resolve instance and board config for a short board key or alias.
+    Why: every command uses the same lookup and friendly error messages.
+    """
+    inst_name, inst, board, _ = get_mapping_full(cfg, instance_name, board_key)
     return inst_name, inst, board
 
 def read_description(description: str, description_file: Optional[Path]) -> str:
@@ -703,6 +775,12 @@ def account_add_cmd(instance_name, url, theme_color):
             if not default_key: default_key = f"board_{board_id}"
             board_key = click.prompt("Short name for this board", default=default_key)
             board_key = ''.join(c if c.isalnum() or c in ['_', '-'] else '_' for c in board_key)
+            alias = _clean_alias(click.prompt("Alias for this board (optional, e.g. DW)", default="", show_default=False) or "")
+            if alias:
+                conflict = _alias_conflicts(boards_config, alias)
+                if conflict:
+                    ui_warn(f"Alias '{alias}' conflicts with {conflict}; skipping")
+                    alias = None
             stacks = client.list_stacks(board_id)
             try:
                 labels = _normalize_labels(client.list_labels(board_id))
@@ -722,8 +800,9 @@ def account_add_cmd(instance_name, url, theme_color):
                 if done_choice>0 and done_choice<=len(stacks): done_stack_id=stacks[done_choice-1]['id']
             else:
                 stack_id = click.prompt("Stack ID for creating new cards", type=int)
-            be={"board_id":board_id,"stack_id":stack_id,"labels":labels}
+            be={"board_id":board_id,"stack_id":stack_id,"board_title":board_title,"labels":labels}
             if done_stack_id: be["done_stack_id"]=done_stack_id
+            if alias: be["alias"]=alias
             boards_config[board_key]=be
     inst_entry={"url":server.rstrip('/'),"username":login_name,"password":app_password,"boards":boards_config}
     if theme_color: inst_entry["color"]=theme_color
@@ -754,7 +833,11 @@ def account_list_cmd(ctx):
         click.echo(f"  {_st(name, fg=c, bold=True)}{marker} {_st(inst.get('url',''), dim=True)} {_st(f'@{inst.get('username')}', fg=c)}{clr}")
         for bk,bv in (inst.get('boards') or {}).items():
             done = f" {_st(f'done={bv.get('done_stack_id')}', dim=True)}" if bv.get('done_stack_id') else ""
-            click.echo(f"    {_st('•', fg=c)} {_st(bk, fg=c)}  board={bv.get('board_id')} stack={bv.get('stack_id')}{done}")
+            real = bv.get('board_title')
+            real_s = f" {_st(f'\"{real}\"', dim=True)}" if real else ""
+            aliases = _board_aliases(bv)
+            alias_s = f" {_st('alias=' + ','.join(aliases), fg=c)}" if aliases else ""
+            click.echo(f"    {_st('•', fg=c)} {_st(bk, fg=c)}{real_s}{alias_s}  board={bv.get('board_id')} stack={bv.get('stack_id')}{done}")
 
 
 @account.command("delete", help="Delete a configured account.")
@@ -832,6 +915,50 @@ def config_color_cmd(ctx, instance_name, color_value, from_theme):
     ui_ok(f"Set color for {_st(instance_name, fg=_inst_color(inst), bold=True)} to {_st(store_val, fg=_inst_color(inst))}")
 
 
+@config_group.command("alias", help="Set or clear a short alias for a board (e.g. DW for Digital Workplace).")
+@click.argument("instance_name")
+@click.argument("board_key")
+@click.argument("alias", required=False)
+@click.option("--clear", is_flag=True, help="Remove the board's current alias")
+def config_alias_cmd(instance_name, board_key, alias, clear):
+    """Set, show, or clear a board alias.
+    Why: short aliases make frequently used boards quicker to target.
+    """
+    if clear and alias:
+        raise click.ClickException("Provide either ALIAS or --clear, not both")
+    cfg = load_config()
+    inst = (cfg.get('instances') or {}).get(instance_name)
+    if not isinstance(inst, dict):
+        raise click.ClickException(f"Instance '{instance_name}' not found in config")
+    canonical, board = _resolve_board_key(inst, board_key, instance_name)
+    ic = _inst_color(inst)
+    if clear:
+        board.pop('alias', None)
+        board.pop('aliases', None)
+        save_config(cfg)
+        ui_ok(f"Cleared alias for {_st(canonical, fg=ic, bold=True)} ({_st(instance_name, fg=ic)})")
+        return
+    if alias is None:
+        current = _board_aliases(board)
+        if current:
+            ui_kv("Alias", ', '.join(current), ic)
+        else:
+            ui_dim("  (no alias configured)")
+        ui_dim(f"  Board '{canonical}'  real name: {board.get('board_title') or '(unknown)'}")
+        return
+    cleaned = _clean_alias(alias)
+    if not cleaned:
+        raise click.ClickException(f"Invalid alias: {alias}")
+    conflict = _alias_conflicts(inst.get('boards') or {}, cleaned, exclude_key=canonical)
+    if conflict:
+        raise click.ClickException(f"Alias '{cleaned}' conflicts with {conflict} in instance '{instance_name}'")
+    board['alias'] = cleaned
+    board.pop('aliases', None)
+    save_config(cfg)
+    real = board.get('board_title') or '(unknown)'
+    ui_ok(f"Alias {_st(cleaned, fg=ic, bold=True)} set for {_st(canonical, fg=ic, bold=True)} ({_st(real, dim=True)}) in {_st(instance_name, fg=ic)}")
+
+
 @cli.command("show-config", help="Show current configuration with passwords masked.")
 def show_config_cmd():
     """Dump config with passwords masked.
@@ -868,8 +995,36 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
     client=DeckClient(inst, debug=debug); ic=_inst_color(inst)
     if boards:
         ui_header(f"Boards on {inst_name}", ic)
-        for b in client.list_boards():
-            owner=(b.get("owner") or {}).get("uid"); click.echo(f"  {_st('board', fg=ic)}={b['id']} {_st(str(b['title']), bold=True)} {_st(f'owner={owner}', dim=True)}")
+        server_boards = client.list_boards()
+        # Map Deck board IDs to their configured short names and aliases.
+        mapped = {}
+        for key, bv in (inst.get('boards') or {}).items():
+            try:
+                mapped[int(bv.get('board_id'))] = (key, _board_aliases(bv))
+            except (TypeError, ValueError):
+                continue
+        changed = False
+        for b in server_boards:
+            owner = (b.get("owner") or {}).get("uid")
+            title = str(b.get('title') or '')
+            bid = b.get('id')
+            head = f"  {_st('board', fg=ic)}={bid} {_st(title, bold=True)}"
+            if bid in mapped:
+                key, aliases = mapped[bid]
+                alias_s = f" {_st('alias=' + ','.join(aliases), fg=ic)}" if aliases else ""
+                head += f"  {_st('→', fg=ic)} {_st(key, fg=ic, bold=True)}{alias_s}"
+                # Cache the real Deck title so offline listings can show it too.
+                bv = (inst.get('boards') or {}).get(key)
+                if isinstance(bv, dict) and not bv.get('board_title'):
+                    bv['board_title'] = title
+                    changed = True
+            else:
+                head += f"  {_st('(not mapped)', dim=True)}"
+            head += f" {_st(f'owner={owner}', dim=True)}"
+            click.echo(head)
+        if changed:
+            save_config(cfg)
+            ui_dim("  Saved real board names to config.")
         return
     if stacks is not None:
         ui_header(f"Stacks for board {stacks} ({inst_name})", ic)
@@ -907,11 +1062,11 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
             if du: ui_kv("Due", _st(_fmt_ts(du), fg='red', bold=True) if is_overdue else _fmt_ts(du), rc, label_width=10)
         return
     if labels_board:
-        inst_name_res,inst_res,board=get_mapping(cfg,instance,labels_board)
+        inst_name_res,inst_res,board,canonical=get_mapping_full(cfg,instance,labels_board)
         rc=_inst_color(inst_res)
         had_cache = isinstance(board.get('labels'), list)
         try:
-            labels=_board_labels(board, client=client, cfg=cfg, inst_name=inst_name_res, board_key=labels_board)
+            labels=_board_labels(board, client=client, cfg=cfg, inst_name=inst_name_res, board_key=canonical)
             ui_header(f"Tags/labels: {inst_name_res}/{labels_board} ({len(labels)})", rc)
             if not labels: ui_dim("  (no labels found)"); return
             for l in labels:
@@ -927,7 +1082,11 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
     if inst.get('color') or inst.get('theme_color'): ui_kv("Color", inst.get('color') or inst.get('theme_color'), ic)
     for k,v in inst.get("boards",{}).items():
         di=f" done_stack={v['done_stack_id']}" if v.get("done_stack_id") else ""
-        click.echo(f"  {_st('•', fg=ic)} {_st(k, fg=ic, bold=True)}  board={v['board_id']} stack={v['stack_id']}{_st(di, dim=True)}")
+        real = v.get('board_title')
+        real_s = f" {_st(f'\"{real}\"', dim=True)}" if real else ""
+        aliases = _board_aliases(v)
+        alias_s = f" {_st('alias=' + ','.join(aliases), fg=ic)}" if aliases else ""
+        click.echo(f"  {_st('•', fg=ic)} {_st(k, fg=ic, bold=True)}{real_s}{alias_s}  board={v['board_id']} stack={v['stack_id']}{_st(di, dim=True)}")
 
 @cli.command("labels", help="List labels configured for a board (cached from account setup).")
 @click.argument("board_key")
@@ -939,12 +1098,12 @@ def labels_cmd(ctx, board_key, instance, refresh):
     Why: labels change in the web UI, so the cache needs a refresh path.
     """
     debug = ctx.obj.get('debug') if ctx.obj else False
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key)
+    cfg=load_config(); inst_name,inst,board,canonical=get_mapping_full(cfg,instance,board_key)
     ic=_inst_color(inst)
     client=DeckClient(inst, debug=debug)
     had_cache = isinstance(board.get('labels'), list)
     try:
-        labels=_board_labels(board, client=client, cfg=cfg, inst_name=inst_name, board_key=board_key, refresh=refresh)
+        labels=_board_labels(board, client=client, cfg=cfg, inst_name=inst_name, board_key=canonical, refresh=refresh)
     except Exception as e:
         ui_err(str(e)); sys.exit(1)
     ui_header(f"Labels: {inst_name}/{board_key} ({len(labels)})", ic)
@@ -978,10 +1137,10 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
     Why: combines prefix, description, tags, due date, assignees and attachments.
     """
     debug = ctx.obj.get('debug') if ctx.obj else False
-    cfg=load_config(); inst_name,inst,board=get_mapping(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
+    cfg=load_config(); inst_name,inst,board,canonical=get_mapping_full(cfg,instance,board_key); client=DeckClient(inst, debug=debug)
     ic=_inst_color(inst)
     ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
-    lids=resolve_label_ids(client,board,list(tag),cfg=cfg,inst_name=inst_name,board_key=board_key) if tag else []
+    lids=resolve_label_ids(client,board,list(tag),cfg=cfg,inst_name=inst_name,board_key=canonical) if tag else []
     due_norm = _normalize_create_duedate(due_date) if due_date else None
     assigned_users = list(assign) if assign else ([inst['username']] if inst.get('username') else None)
     try:

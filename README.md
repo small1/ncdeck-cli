@@ -9,6 +9,7 @@ A lightweight CLI for [Nextcloud Deck](https://apps.nextcloud.com/apps/deck) tha
 - **See everything at a glance** — `list --cards`, `search`, and `show` display assignees, due dates, colored label chips, task-list counters (`[done/total]`), comment counters (`[💬 n]`), dependencies (`[🔗 #id]`), and prominent `OVERDUE` / `DONE` status. In a terminal, `show` also renders descriptions and comments as Markdown (use `--raw` for the source).
 - **Plan your day** — `agenda yesterday|today|tomorrow|week|month` (with `-A` for all instances) and the interactive `completed` review that marks cards done or pushes the rest to the next day.
 - **Multiple instances** — one config, short board/instance names, per-instance theme colors, cached labels (with colors), and shared-board filtering.
+- **Board aliases** — give a board a short alias (e.g. `DW` for `Digital Workplace`) and use it anywhere a board key is accepted; `ncdeck list --boards` shows each real board name next to its mapped name and alias.
 - **Bulk cleanup** — `archive BOARD BEFORE_DATE` to archive old done cards.
 
 ## Quick Start
@@ -31,7 +32,7 @@ There are two ways to add accounts.
 
 **1. Automatic — `ncdeck account add` (primary and easiest)**
 
-This is the recommended way. It uses Nextcloud Login Flow v2: a browser opens for you to approve the login, then `ncdeck` auto-discovers boards, stacks, labels (with colors), the done stack, and the instance theme color. It prompts you for short names and merges everything into your config — no manual ID hunting and no app password to paste.
+This is the recommended way. It uses Nextcloud Login Flow v2: a browser opens for you to approve the login, then `ncdeck` auto-discovers boards, stacks, labels (with colors), the done stack, and the instance theme color. It prompts you for short names and an optional alias per board, stores the real board name, and merges everything into your config — no manual ID hunting and no app password to paste.
 
 ```bash
 ncdeck account add
@@ -59,19 +60,33 @@ instances:
       bugs:
         board_id: 2
         stack_id: 9
+        board_title: Bug Tracker
+        alias: BT
 ```
 
-See [README_FULL.md](README_FULL.md) for every config option, `ncdeck account list/delete`, and `ncdeck config color`.
+A board can have a short `alias` (or an `aliases` list). Use it anywhere a board key is accepted:
+
+```bash
+ncdeck config alias work bugs BT          # set / replace an alias
+ncdeck config alias work bugs             # show the current alias
+ncdeck config alias work bugs --clear     # remove it
+ncdeck list --boards -i work             # real name -> mapped name + alias
+ncdeck list --cards BT -i work
+```
+
+See [README_FULL.md](README_FULL.md) for every config option, `ncdeck account list/delete`, and `ncdeck config color/alias`.
 
 ### Usage
 
 ```bash
-# See what is configured
+# See what is configured (real board names + mapped names/aliases)
+ncdeck list --boards
 ncdeck account list
 ncdeck labels inbox
 
-# Create a card
+# Create a card (aliases work anywhere a board key does)
 ncdeck create inbox "Fix login bug" -p "[BUG]" -t bug --due-date tomorrow
+ncdeck create BT "Another bug" -p "[BUG]"
 ```
 
 ## More examples

@@ -17,6 +17,7 @@
 
 - **Multi-instance support** - Manage multiple Nextcloud instances from a single config
 - **Board shortcuts** - Use short `board_key` names instead of typing board/stack IDs every time
+- **Board aliases** - Give a board an extra short alias (e.g. `DW` for `Digital Workplace`), usable anywhere a board key is accepted; `ncdeck list --boards` shows the real board name next to its mapped name and alias
 - **Custom prefixes** - Add any prefix to card titles on-the-fly with `-p/--prefix`
 - **Markdown descriptions** - Pass descriptions directly, from a file (`-f`), or via piped stdin
 - **Due dates** - Set due dates in ISO format
@@ -81,7 +82,7 @@
 
 3. **Add an account (two ways)**
 
-   **Automatic — recommended and easiest.** `ncdeck account add` uses Nextcloud Login Flow v2, opens your browser to authenticate, then auto-discovers boards, stacks, labels (with colors), the done stack, and the theme color. It prompts for short names and merges everything into your config:
+   **Automatic — recommended and easiest.** `ncdeck account add` uses Nextcloud Login Flow v2, opens your browser to authenticate, then auto-discovers boards, stacks, labels (with colors), the done stack, and the theme color. It prompts for short names and an optional alias per board, stores the real board name, and merges everything into your config:
    ```bash
    ncdeck account add
    # or pre-fill the server URL and short instance name
@@ -137,6 +138,8 @@ instances:
         board_id: 2
         stack_id: 9
         done_stack_id: 11
+        board_title: Bug Tracker       # Optional. Real Deck board name (stored by the wizard)
+        alias: BT                      # Optional. Extra short name, e.g. DW for Digital Workplace
 ```
 
 ### Config options explained
@@ -154,15 +157,20 @@ instances:
 | `board_id` | Board mapping | `int` | Yes | Numeric ID of the Deck board. |
 | `stack_id` | Board mapping | `int` | Yes | Numeric ID of the default stack (list) to create cards in. |
 | `done_stack_id` | Board mapping | `int` | No | Numeric ID of the stack to move cards to when using `ncdeck done`. Required if you want to use `done` without `--stack`. |
+| `board_title` | Board mapping | `string` | No | Real Deck board title, stored by `ncdeck account add` and cached by `list --boards`. Shown in board listings. |
+| `alias` | Board mapping | `string` | No | Extra short name for the board (e.g. `DW`). Case-insensitive; usable anywhere a board key is accepted. |
+| `aliases` | Board mapping | `list` | No | Optional list of several aliases; `alias` and `aliases` can be combined. |
 
 > **Note:** Prefixes are passed per-command with `-p/--prefix` rather than configured. Old `prefix:` entries in board mappings are ignored.
+>
+> **Aliases:** Set or clear them with `ncdeck config alias INSTANCE BOARD [ALIAS] [--clear]`. An exact board key always wins over an alias, and an alias must be unique within its instance.
 
 ### Finding board, stack, and label IDs
 
 If you configured an account with `ncdeck account add`, these IDs were discovered for you. For manual configs, or to double-check them, use the `list` command:
 
 ```bash
-# List all boards visible to the user with their IDs
+# List all boards: real name, mapped short name, alias, ID and owner
 ncdeck list --boards
 
 # List all stacks and their IDs for a given board
@@ -216,6 +224,36 @@ Usage: ncdeck config color [OPTIONS] INSTANCE_NAME [COLOR]
 | `COLOR` | Color value (named `cyan`/`bright_red`, hex `"#8b0000"` **quoted in shell**, or `139,0,0`). Omit when using `--theme`. |
 | `--theme` | Fetch the color from the instance’s current Nextcloud theming (capabilities). Mutually exclusive with `COLOR`. |
 
+### `ncdeck config alias`
+
+Set, show, or clear a short alias for a board.
+
+```text
+Usage: ncdeck config alias [OPTIONS] INSTANCE_NAME BOARD_KEY [ALIAS]
+```
+
+| Option/Arg | Description |
+| --- | --- |
+| `INSTANCE_NAME` | Configured instance name. |
+| `BOARD_KEY` | Configured board key **or an existing alias** identifying the board. |
+| `ALIAS` | New alias (case-insensitive, letters/digits/`_`/`-`). Omit to show the current alias. |
+| `--clear` | Remove the board's alias. Mutually exclusive with `ALIAS`. |
+
+Aliases work anywhere a board key is accepted (`create`, `show`, `list --cards`, `labels`, `done`, …). Exact board keys take precedence, and aliases must be unique within an instance.
+
+```bash
+# Give Digital Workplace a short alias
+ncdeck config alias rl digital_workplace DW
+
+# Use the alias
+ncdeck list --cards DW -i rl
+ncdeck create DW "Prepare report" -p "[DW]"
+
+# Show / clear it again
+ncdeck config alias rl DW
+ncdeck config alias rl DW --clear
+```
+
 ### `ncdeck list`
 
 Used to discover boards, stacks, and cached labels/tags.
@@ -227,7 +265,7 @@ Usage: ncdeck list [OPTIONS]
 | Option | Description |
 | --- | --- |
 | `-i, --instance TEXT` | Use a specific instance from config. Falls back to `default_instance`. |
-| `--boards` | List all accessible Deck boards with `board_id`, title and owner. |
+| `--boards` | List all accessible Deck boards with `board_id`, real title, owner, and the mapped short name / alias (or `(not mapped)`). Caches real board names into config. |
 | `--stacks INTEGER` | List all stacks for the given `board_id` with `stack_id`, title and order. |
 | `--labels BOARD_KEY` | List cached tags/labels for a configured board (IDs and colors). Discovers and saves them once if not yet in config. |
 
@@ -701,6 +739,11 @@ Tag matching is **case-insensitive**.
 # List cards in a board (counters, labels, due dates, overdue/done status)
 ncdeck list --cards inbox
 
+# The same board via its alias (e.g. DW for Digital Workplace)
+ncdeck list --boards -i rl
+ncdeck list --cards DW -i rl
+ncdeck show DW 123 -i rl
+
 # Full details for one card, including description and comments
 ncdeck show inbox 123
 
@@ -768,6 +811,7 @@ ncdeck create bugs "Memory leak in worker" \
 - **Use App Passwords**: Generate one at `Settings > Security > Devices & sessions > Create new app password`. Never commit your real password to version control.
 - **Markdown is preserved**: Nextcloud Deck renders Markdown in card descriptions, so lists, code blocks, links, etc. will display correctly.
 - **Labels are board-specific and cached**: The same label name can exist on different boards with different IDs. `ncdeck` resolves `-t/--tag` against the labels cached in config for that board (no API lookup on each create). Run `ncdeck labels BOARD_KEY --refresh` after changing labels in the Deck web UI.
+- **Board aliases are per instance**: `ncdeck config alias INSTANCE BOARD ALIAS` sets one; `ncdeck list --boards` shows each real board name mapped to its key and alias. Exact keys take precedence and aliases are case-insensitive.
 - **Prefix is flexible**: Since prefix is a CLI flag, you can use different conventions per card without changing your config.
 - **Piping is great for automation**: Combine with `git log`, `journalctl`, `curl`, scripts, or clipboard tools to quickly create cards.
 - **Done workflow**: Configure `done_stack_id` for each board to streamline marking cards as complete. You can also use `--archive` if you prefer archiving.

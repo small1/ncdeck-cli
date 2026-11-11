@@ -29,6 +29,8 @@ instances:
         board_id: 2
         stack_id: 9
         done_stack_id: 11
+        board_title: Bug Tracker       # Optional: real Deck board name (stored by `account add`)
+        alias: BT                      # Optional: extra short name, e.g. DW for Digital Workplace
       reviews:
         board_id: 3
         stack_id: 12
