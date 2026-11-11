@@ -29,7 +29,7 @@
 - **Move cards** - Move cards between any stacks on a board
 - **Archive cards** - Optionally archive cards instead of moving to done stack
 - **Comments, descriptions, and attachments** - Add comments, replace/amend descriptions, and attach files to existing cards
-- **Agenda and daily review** - `agenda yesterday|today|tomorrow|week|month`, an absolute `YYYY-MM-DD` date, or a `START END` range (plus `-A` for all instances), and interactive `completed` to mark done or push cards to the next day
+- **Agenda and daily review** - `agenda yesterday|today|tomorrow|week|month`, an absolute `YYYY-MM-DD` date, or a `START END` range (plus `-A` for all instances); `today` also lists overdue cards from earlier days, and interactive `completed` marks done or pushes cards to the next day
 - **Rich card listings** - Task/comment/dependency counters, colored label chips, and prominent overdue/done status in `list --cards`, `search`, `show`, and `agenda`
 - **Per-instance theme colors** - Auto-detected from Nextcloud theming, or set with `ncdeck config color`
 - **Shared-board filtering** - Show only cards assigned to you by default, or all cards with `--all`
@@ -652,6 +652,8 @@ ncdeck agenda 2026-11-15 -A             # same day across every instance
 
 `agenda` excludes done cards and highlights overdue ones in red. Dates are interpreted in your local timezone.
 
+> **`today` includes leftovers:** the `today` period (also the default when no argument is given) additionally lists open cards whose due date is before today, marked `OVERDUE`, with a `+ N overdue card(s) from earlier days` line. It looks back up to ~10 years. Other periods, explicit dates, and date ranges stay strictly within the requested window.
+
 ## Usage Examples
 
 ### Basic card creation
@@ -701,7 +703,7 @@ ncdeck create inbox "Submit expense report" -p "[FINANCE]" --due-date 2026-11-05
 # Review what was due yesterday - useful for cards you forgot to close or move
 ncdeck agenda yesterday
 
-# Cards due today on the default instance
+# Cards due today - plus open cards overdue from earlier days
 ncdeck agenda today
 
 # Tomorrow, the next 7 days, or the next 30 days
@@ -728,7 +730,7 @@ ncdeck completed -A --archive
 ncdeck archive inbox 2026-01-01 -y
 ```
 
-`agenda` excludes done cards and highlights overdue ones in red; `agenda yesterday` or `agenda YYYY-MM-DD` is a quick way to find cards that slipped through. Dates are local, and a `START END` pair gives an inclusive range. `completed` combines today's and overdue cards into one prompt.
+`agenda` excludes done cards and highlights overdue ones in red; `agenda today` also pulls in open cards overdue from earlier days. `agenda yesterday` or `agenda YYYY-MM-DD` looks at one exact day. Dates are local, and a `START END` pair gives an inclusive range. `completed` combines today's and overdue cards into one prompt.
 
 ### Adding tags/labels by name
 

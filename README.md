@@ -29,7 +29,7 @@ A few glimpses of `ncdeck` in action (captured in [Ghostty](https://ghostty.org/
 - **Create rich cards** — titles with prefixes, due dates (`today`, `tomorrow`, `2026-11-11`, or full timestamps), tags by name, descriptions from inline text / files / stdin, assignees, and file attachments.
 - **Work with existing cards** — mark done (and move to a done stack), move between stacks, assign/unassign users, add comments, set or amend descriptions, and attach files.
 - **See everything at a glance** — `list --cards`, `search`, and `show` display assignees, due dates, colored label chips, task-list counters (`[done/total]`), comment counters (`[💬 n]`), dependencies (`[🔗 #id]`), and prominent `OVERDUE` / `DONE` status. In a terminal, `show` also renders descriptions and comments as Markdown (use `--raw` for the source).
-- **Plan your day** — `agenda yesterday|today|tomorrow|week|month`, an exact `YYYY-MM-DD` date, or a `START END` range (with `-A` for all instances), plus the interactive `completed` review.
+- **Plan your day** — `agenda yesterday|today|tomorrow|week|month`, an exact `YYYY-MM-DD` date, or a `START END` range (with `-A` for all instances); `today` also surfaces overdue cards from earlier days. Plus the interactive `completed` review.
 - **Multiple instances** — one config, short board/instance names, per-instance theme colors, cached labels (with colors), and shared-board filtering.
 - **Board aliases** — give a board a short alias (e.g. `DW` for `Digital Workplace`) and use it anywhere a board key is accepted; `ncdeck list --boards` shows each real board name next to its mapped name and alias.
 - **Bulk cleanup** — `archive BOARD BEFORE_DATE` to archive old done cards.
@@ -142,7 +142,7 @@ ncdeck done inbox 123
 # Review what was due yesterday (handy for items you forgot to close or move)
 ncdeck agenda yesterday
 
-# Due today on the default instance
+# Due today - also includes open cards overdue from earlier days
 ncdeck agenda today
 
 # Tomorrow, the next 7 days, or the next 30 days

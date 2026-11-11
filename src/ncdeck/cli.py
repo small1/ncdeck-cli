@@ -2172,7 +2172,7 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
     return items
 
 # ---- Agenda, daily review and bulk archive ----
-@cli.command("agenda", help="Show cards by due date (period, YYYY-MM-DD, or a date range).")
+@cli.command("agenda", help="Show cards by due date; today also includes earlier overdue cards.")
 @click.argument("period", default="today", required=False)
 @click.argument("end_date", required=False)
 @click.option("-i", "--instance")
@@ -2180,8 +2180,8 @@ def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, i
 @click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
 @click.pass_context
 def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards):
-    """Show cards due within a relative period or an explicit date range.
-    Why: daily planning, catching leftover days, and looking up arbitrary dates.
+    """Show cards due in a period or date range, plus earlier overdue ones for today.
+    Why: daily planning should surface unfinished items that slipped past their due date.
     """
     debug = ctx.obj.get('debug') if ctx.obj else False
     cfg = load_config()
@@ -2197,15 +2197,25 @@ def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards):
         if end_dt is not None and end_dt < start_date:
             raise click.ClickException("END_DATE must not be before the start date")
         start, end, p = _agenda_range(period, start_date=start_date, end_date=end_dt)
+        include_earlier = False
     else:
         if end_date:
             raise click.ClickException("END_DATE can only be used together with a start date (YYYY-MM-DD)")
         start, end, p = _agenda_range(period)
-    items = _gather_agenda(cfg, instance, all_instances, start, end, debug=debug, include_done=False, all_cards=all_cards)
+        # `today` (and the default) should also surface open cards left over
+        # from previous days; explicit periods/dates stay strictly bounded.
+        include_earlier = (p == 'today')
+    display_start = start
+    gather_start = start - timedelta(days=3650) if include_earlier else start
+    items = _gather_agenda(cfg, instance, all_instances, gather_start, end, debug=debug, include_done=False, all_cards=all_cards)
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     hc = 'cyan' if all_instances else _inst_color(cfg.get('instances',{}).get(scope))
-    header = f"Agenda: {p}  ({start.strftime('%Y-%m-%d')} → {(end - timedelta(seconds=1)).strftime('%Y-%m-%d')})  [{scope}]"
+    header = f"Agenda: {p}  ({display_start.strftime('%Y-%m-%d')} → {(end - timedelta(seconds=1)).strftime('%Y-%m-%d')})  [{scope}]"
     ui_header(header, hc)
+    if include_earlier:
+        earlier = [it for it in items if it['due'] < start]
+        if earlier:
+            click.echo(_st(f"  + {len(earlier)} overdue card(s) from earlier days", fg='red', dim=True))
     if not items:
         ui_dim("  No cards with due dates in this period.")
         click.echo()
