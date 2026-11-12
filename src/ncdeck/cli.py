@@ -5,7 +5,7 @@ Why: keep card creation, inspection and daily planning available without a
 browser, across multiple Nextcloud instances, from one XDG config file.
 """
 
-import os, sys, json, time, webbrowser, re, shutil, unicodedata
+import os, sys, json, time, webbrowser, re, shutil, unicodedata, mimetypes
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
@@ -89,14 +89,16 @@ class DeckClient:
 
     def _post_file(self, path, files, data=None):
         """POST multipart form data to a Deck endpoint.
-        Why: attachments must not inherit the session's JSON Content-Type.
+        Why: the session defaults to JSON, but multipart needs a generated
+        boundary; requesting `Content-Type: None` makes requests drop the
+        session default instead of re-merging it (otherwise Deck returns 400).
         """
         headers = dict(self.session.headers)
-        headers.pop('Content-Type', None)
+        headers['Content-Type'] = None  # removed during requests' header merge
         headers['OCS-APIREQUEST'] = 'true'
         url = f"{self.url}{path}"
         if self.debug: click.echo(f"[DEBUG] POST {url}", err=True)
-        r = self.session.post(url, files=files, data=data, headers=headers)
+        r = self.session.post(url, files=files, data=data, headers=headers, timeout=60)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
         r.raise_for_status()
         return r.json()
@@ -496,8 +498,9 @@ class DeckClient:
         return card
 
     def upload_attachment(self, board_id, card_id, file_path):
-        """Upload a file with curl multipart, trying type=file then deck_file.
-        Why: Deck's attachment API rejected requests' multipart handling in practice.
+        """Upload a file to a card with a multipart POST (no external tools).
+        Why: Deck expects a `type` form field plus an uploaded `file`; doing it
+        in-process with requests keeps the standalone binary self-contained.
         """
         p = Path(file_path)
         card = None
@@ -506,47 +509,23 @@ class DeckClient:
         except Exception:
             pass
         stack_id = (card.get('stackId') if card else None) or -1
-        
-        import subprocess
-        # Try POST with multipart as per API docs
-        try:
-            result = subprocess.run([
-                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
-                '-X', 'POST',
-                '-H', 'OCS-APIREQUEST: true',
-                '-F', f'type=file',
-                '-F', f'file=@{p.absolute()};filename={p.name}',
-                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if self.debug:
-                click.echo(f"[DEBUG] POST multipart tried to /attachments, rc={result.returncode}", err=True)
-            output = result.stdout.decode()
-            if result.returncode == 0 and '405' not in output and '404' not in output:
-                return "uploaded"
-        except Exception as e:
-            if self.debug:
-                click.echo(f"[DEBUG] Error: {e}", err=True)
-            pass
-        
-        # Try with deck_file type
-        try:
-            result = subprocess.run([
-                'curl', '-s', '-w', '\n%{http_code}', '-u', f"{self.auth.username}:{self.auth.password}",
-                '-X', 'POST',
-                '-H', 'OCS-APIREQUEST: true',
-                '-F', f'type=deck_file',
-                '-F', f'file=@{p.absolute()};filename={p.name}',
-                f"{self.url}/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if self.debug:
-                click.echo(f"[DEBUG] POST multipart tried deck_file, rc={result.returncode}", err=True)
-            output = result.stdout.decode()
-            if result.returncode == 0 and '405' not in output:
-                return "uploaded"
-        except Exception:
-            pass
-        
-        raise Exception("Failed to upload attachment")
+        path = (f"/index.php/apps/deck/api/v1.0/boards/{board_id}"
+                f"/stacks/{stack_id}/cards/{card_id}/attachments")
+        content_type = mimetypes.guess_type(p.name)[0] or 'application/octet-stream'
+
+        # Deck has two attachment backends. `file` stores into Nextcloud Files
+        # and can conflict on duplicate names, so fall back to `deck_file`.
+        last_exc = None
+        for attach_type in ('file', 'deck_file'):
+            try:
+                with p.open('rb') as fh:
+                    files = {'file': (p.name, fh, content_type)}
+                    return self._post_file(path, files, data={'type': attach_type})
+            except Exception as e:
+                last_exc = e
+                if self.debug:
+                    click.echo(f"[DEBUG] attachment upload with type={attach_type} failed: {e}", err=True)
+        raise Exception(f"Failed to upload attachment: {last_exc}")
 
 # ---- Shared config and input helpers ----
 def _clean_alias(raw):

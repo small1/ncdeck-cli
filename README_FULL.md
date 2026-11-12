@@ -77,9 +77,9 @@ make binary      # writes dist/ncdeck (or dist/ncdeck.exe)
 The build is isolated in `.build-venv` and uses `requirements-build.txt`;
 a locally built binary reflects your own glibc version (the released Linux
 binary is the portable one). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the bundled
-components and licenses. Note: `attach` still requires `curl` on the target
-machine, and `account add` needs a browser (it prints the login URL as a
-fallback).
+components and licenses. The binary needs no Python, pip packages, or external
+tools; only `account add` needs a browser (it prints the login URL as a
+fallback on headless machines).
 
 ### From source (Python 3.9+)
 

@@ -21,5 +21,5 @@ and are available from the project links above. When building from source,
 `pip install -r requirements.txt` installs these packages with their license
 files.
 
-> **Note:** the `attach` command still invokes the external `curl` binary at
-> runtime; `curl` is not bundled. See the README for details.
+> **Note:** no external command-line tools are required at runtime. File
+> attachments are uploaded in-process with `requests`; `curl` is not used.
