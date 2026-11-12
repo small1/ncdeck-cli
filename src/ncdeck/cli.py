@@ -681,7 +681,7 @@ def resolve_label_ids(client: DeckClient, board: dict, tag_names: List[str], cfg
 
 # ---- CLI root, account and config commands ----
 @click.group(help="Create Nextcloud Deck cards from the CLI.")
-@click.version_option(version="0.2.0", prog_name="ncdeck")
+@click.version_option(version="0.1.0", prog_name="ncdeck")
 @click.option('--debug', is_flag=True, hidden=True, help='Enable debug output')
 @click.pass_context
 def cli(ctx, debug):
