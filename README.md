@@ -50,9 +50,11 @@ ncdeck --version
 
 Binaries are built for Linux (x86_64), macOS (x86_64 + arm64), and Windows
 (x86_64) on every `v*` tag. The Linux build targets glibc ≥ 2.35. The binary
-is self-contained — no Python, pip packages, or external tools such as `curl`
-are needed. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled
-components and licenses.
+is self-contained — no Python, pip packages, or third-party CLI tools (such as
+`curl`) are needed. `account add` opens the operating system's default browser
+and prints the login URL as a fallback. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled components and
+licenses.
 
 **Option B — from source (Python 3.9+)**
 

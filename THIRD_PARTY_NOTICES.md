@@ -21,5 +21,7 @@ and are available from the project links above. When building from source,
 `pip install -r requirements.txt` installs these packages with their license
 files.
 
-> **Note:** no external command-line tools are required at runtime. File
-> attachments are uploaded in-process with `requests`; `curl` is not used.
+> **Note:** no third-party command-line tools are required at runtime. File
+> attachments are uploaded in-process with `requests` (`curl` is not used), and
+> the login flow opens the OS's default browser via its standard URL handler
+> rather than Python's browser-detection heuristics.

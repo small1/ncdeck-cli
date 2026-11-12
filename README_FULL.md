@@ -77,9 +77,11 @@ make binary      # writes dist/ncdeck (or dist/ncdeck.exe)
 The build is isolated in `.build-venv` and uses `requirements-build.txt`;
 a locally built binary reflects your own glibc version (the released Linux
 binary is the portable one). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the bundled
-components and licenses. The binary needs no Python, pip packages, or external
-tools; only `account add` needs a browser (it prints the login URL as a
-fallback on headless machines).
+components and licenses. The binary needs no Python, pip packages, or
+third-party CLI tools. `account add` opens the OS default browser through the
+standard URL handler (`xdg-open` on Linux, `open` on macOS, the file
+association on Windows); it prints the login URL as a fallback on headless
+machines, so a missing browser never blocks the wizard.
 
 ### From source (Python 3.9+)
 
@@ -117,7 +119,7 @@ fallback on headless machines).
 
 3. **Add an account (two ways)**
 
-   **Automatic — recommended and easiest.** `ncdeck account add` uses Nextcloud Login Flow v2, opens your browser to authenticate, then auto-discovers boards, stacks, labels (with colors), the done stack, and the theme color. It prompts for short names and an optional alias per board, stores the real board name, and merges everything into your config:
+   **Automatic — recommended and easiest.** `ncdeck account add` uses Nextcloud Login Flow v2, opens your OS default browser to authenticate, then auto-discovers boards, stacks, labels (with colors), the done stack, and the theme color. It prompts for short names and an optional alias per board, stores the real board name, and merges everything into your config:
    ```bash
    ncdeck account add
    # or pre-fill the server URL and short instance name
@@ -234,7 +236,7 @@ Usage: ncdeck account add [OPTIONS]
 | `--color TEXT` | `string` | `auto/prompted` | Theme color for this instance. If omitted, ncdeck tries to auto-detect it from the Nextcloud server theming (capabilities) and offers it as the default. |
 
 The wizard will:
-1. Start Login Flow v2 and open your browser for authentication
+1. Start Login Flow v2 and open your default browser for authentication
 2. Wait for you to approve the login in Nextcloud
 3. Auto-detect the server theme color (when available) and prompt for the instance color
 4. Auto-discover all boards accessible to your account

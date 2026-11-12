@@ -5,7 +5,7 @@ Why: keep card creation, inspection and daily planning available without a
 browser, across multiple Nextcloud instances, from one XDG config file.
 """
 
-import os, sys, json, time, webbrowser, re, shutil, unicodedata, mimetypes
+import os, sys, json, time, re, shutil, unicodedata, mimetypes
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
@@ -700,6 +700,19 @@ def account():
     pass
 
 
+def _open_login_browser(url):
+    """Open the Login Flow URL in the operating system's default browser.
+    Why: click.launch delegates to the OS handler (xdg-open / open /
+    os.startfile) instead of Python's environment-dependent webbrowser
+    detection, so it behaves the same on Linux, macOS and Windows binaries.
+    """
+    try:
+        click.launch(url)
+        return True
+    except Exception:
+        return False
+
+
 @account.command("add", help="Add a Nextcloud account via Login Flow v2 with board autodiscovery.")
 @click.option("-i", "--instance", "instance_name", help="Short name for this instance")
 @click.option("--url", help="Nextcloud server URL")
@@ -718,9 +731,10 @@ def account_add_cmd(instance_name, url, theme_color):
     resp.raise_for_status()
     flow = resp.json()
     login_url = flow['login']; poll = flow['poll']; endpoint = poll['endpoint']; token = poll['token']
-    ui_info(f"Opening browser to authenticate...\nIf browser doesn't open, visit: {login_url}", 'cyan')
-    try: webbrowser.open(login_url)
-    except: pass
+    ui_info(f"Opening your default browser to authenticate...\nIf it doesn't open, visit: {login_url}", 'cyan')
+    # Never let a missing/failed browser abort the login flow: the printed URL
+    # is the fallback (e.g. on headless servers).
+    _open_login_browser(login_url)
     ui_dim("Waiting for authentication...")
     creds=None
     for _ in range(120):
