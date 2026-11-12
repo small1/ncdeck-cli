@@ -50,6 +50,39 @@
 
 ## Installation
 
+You can install a prebuilt standalone binary, or install from source with Python.
+
+### Prebuilt binary (no Python required)
+
+Download `ncdeck-<os>-<arch>` from the [Releases](https://github.com/small1/ncdeck-cli/releases) page and put it on your `$PATH`:
+
+```bash
+chmod +x ncdeck-linux-x86_64
+sudo mv ncdeck-linux-x86_64 /usr/local/bin/ncdeck
+ncdeck --version
+```
+
+Binaries are produced by a GitHub Actions matrix for Linux (x86_64), macOS
+(x86_64 + arm64), and Windows (x86_64) whenever a `v*` tag is pushed. The Linux
+build targets glibc ≥ 2.35 (built on Ubuntu 22.04), so it also runs on newer
+distributions. Unsigned macOS/Windows binaries may trigger Gatekeeper /
+SmartScreen warnings.
+
+To build one yourself:
+
+```bash
+make binary      # writes dist/ncdeck (or dist/ncdeck.exe)
+```
+
+The build is isolated in `.build-venv` and uses `requirements-build.txt`;
+a locally built binary reflects your own glibc version (the released Linux
+binary is the portable one). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the bundled
+components and licenses. Note: `attach` still requires `curl` on the target
+machine, and `account add` needs a browser (it prints the login URL as a
+fallback).
+
+### From source (Python 3.9+)
+
 1. **Install dependencies**
 
    ```bash

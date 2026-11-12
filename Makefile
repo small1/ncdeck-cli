@@ -1,4 +1,4 @@
-.PHONY: help install install-dev build clean uninstall test
+.PHONY: help install install-dev build binary clean uninstall test
 
 PYTHON ?= python3
 PIP ?= pip3
@@ -11,7 +11,8 @@ help:
 	@echo "Available targets:"
 	@echo "  install      Install ncdeck system-wide/user (uses pip)"
 	@echo "  install-dev  Install in development mode"
-	@echo "  build        Build distribution packages"
+	@echo "  build        Build distribution packages (wheel + sdist)"
+	@echo "  binary       Build a standalone PyInstaller binary in dist/"
 	@echo "  clean        Remove build artifacts"
 	@echo "  uninstall    Uninstall ncdeck"
 	@echo "  install-bin  Install just the script to ~/.local/bin"
@@ -27,8 +28,11 @@ build:
 	$(PIP) install --upgrade build
 	$(PYTHON) -m build
 
+binary:
+	bash scripts/build-binary.sh
+
 clean:
-	rm -rf build/ dist/ *.egg-info src/*.egg-info .pytest_cache/
+	rm -rf build/ dist/ .build-venv/ *.egg-info src/*.egg-info .pytest_cache/ *.spec
 	find . -type f -name "*.pyc" -delete
 	find . -type d -name "__pycache__" -delete
 

@@ -1,0 +1,4 @@
+# Build-time dependencies for producing the standalone binary.
+# Keep PyInstaller pinned so release artifacts are reproducible.
+-r requirements.txt
+pyinstaller==6.22.3

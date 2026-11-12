@@ -1,0 +1,77 @@
+name: Build release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # PyInstaller cannot cross-compile, so build one binary per OS/arch.
+    # ubuntu-22.04 is deliberately used for Linux: its older glibc (2.35)
+    # produces a binary that also runs on newer distributions.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            python: '3.10'
+            artifact: ncdeck-linux-x86_64
+          - os: macos-13
+            python: '3.11'
+            artifact: ncdeck-macos-x86_64
+          - os: macos-14
+            python: '3.11'
+            artifact: ncdeck-macos-arm64
+          - os: windows-2022
+            python: '3.11'
+            artifact: ncdeck-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build standalone binary
+        shell: bash
+        run: bash scripts/build-binary.sh
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          mkdir -p release
+          if [[ -f dist/ncdeck.exe ]]; then
+            cp dist/ncdeck.exe "release/${{ matrix.artifact }}"
+          else
+            cp dist/ncdeck "release/${{ matrix.artifact }}"
+            chmod +x "release/${{ matrix.artifact }}"
+          fi
+          cp LICENSE release/LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md release/THIRD_PARTY_NOTICES.md
+
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          "release/${{ matrix.artifact }}" --version
+          "release/${{ matrix.artifact }}" --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release/
+          if-no-files-found: error
+
+      - name: Attach binaries to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release/*
+          fail_on_unmatched_files: true

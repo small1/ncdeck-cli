@@ -38,6 +38,23 @@ A few glimpses of `ncdeck` in action (captured in [Ghostty](https://ghostty.org/
 
 ### Installation
 
+**Option A — prebuilt binary (no Python needed)**
+
+Download `ncdeck-<os>-<arch>` from the [Releases](https://github.com/small1/ncdeck-cli/releases) page, then:
+
+```bash
+chmod +x ncdeck-linux-x86_64
+sudo mv ncdeck-linux-x86_64 /usr/local/bin/ncdeck
+ncdeck --version
+```
+
+Binaries are built for Linux (x86_64), macOS (x86_64 + arm64), and Windows
+(x86_64) on every `v*` tag. The Linux build targets glibc ≥ 2.35. Note that
+`attach` still needs `curl` on the target machine; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+**Option B — from source (Python 3.9+)**
+
 ```bash
 pip install .
 ```
@@ -46,6 +63,12 @@ Or for development:
 
 ```bash
 pip install -e .
+```
+
+To build your own standalone binary locally:
+
+```bash
+make binary      # creates dist/ncdeck (or dist/ncdeck.exe)
 ```
 
 ### Configuration
