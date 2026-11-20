@@ -24,17 +24,22 @@ jobs:
           - os: macos-13
             python: '3.11'
             artifact: ncdeck-macos-x86_64
+            optional: true   # macOS runners are not available on every plan
           - os: macos-14
             python: '3.11'
             artifact: ncdeck-macos-arm64
+            optional: true
           - os: windows-2022
             python: '3.11'
             artifact: ncdeck-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
+    # A missing macOS runner must not block the release for 24 hours.
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.optional == true }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 

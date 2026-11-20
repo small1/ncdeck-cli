@@ -865,11 +865,15 @@ def account_add_cmd(instance_name, url, theme_color):
             stack_id=None; done_stack_id=None
             if stacks:
                 ui_kv("Stacks", "", inst_color)
-                for i,s in enumerate(stacks): click.echo(f"    {_st(str(i+1)+'.', fg=inst_color)} {s['title']} {_st(f'(id: {s['id']})', dim=True)}")
+                for i, s in enumerate(stacks):
+                    sid_s = _st('(id: ' + str(s['id']) + ')', dim=True)
+                    click.echo(f"    {_st(str(i+1)+'.', fg=inst_color)} {s['title']} {sid_s}")
                 stack_id = click.prompt("Stack ID for creating new cards", default=stacks[0]['id'], type=int)
                 ui_kv("Done stack", "choose 0 for none", inst_color)
                 click.echo(f"    {_st('0.', fg=inst_color)} None")
-                for i,s in enumerate(stacks): click.echo(f"    {_st(str(i+1)+'.', fg=inst_color)} {s['title']} {_st(f'(id: {s['id']})', dim=True)}")
+                for i, s in enumerate(stacks):
+                    sid_s = _st('(id: ' + str(s['id']) + ')', dim=True)
+                    click.echo(f"    {_st(str(i+1)+'.', fg=inst_color)} {s['title']} {sid_s}")
                 done_choice = click.prompt("Done stack", default=0, type=int)
                 if done_choice>0 and done_choice<=len(stacks): done_stack_id=stacks[done_choice-1]['id']
             else:
@@ -903,12 +907,15 @@ def account_list_cmd(ctx):
     for name, inst in cfg.get('instances', {}).items():
         c = _inst_color(inst)
         marker = _st(" [default]", fg=c, bold=True) if name == default else ""
-        clr = f" {_st(f'({inst.get('color') or inst.get('theme_color')})', dim=True)}" if (inst.get('color') or inst.get('theme_color')) else ""
-        click.echo(f"  {_st(name, fg=c, bold=True)}{marker} {_st(inst.get('url',''), dim=True)} {_st(f'@{inst.get('username')}', fg=c)}{clr}")
+        inst_color_value = inst.get('color') or inst.get('theme_color')
+        clr = f" {_st('(' + str(inst_color_value) + ')', dim=True)}" if inst_color_value else ""
+        user_s = _st('@' + str(inst.get('username') or ''), fg=c)
+        click.echo(f"  {_st(name, fg=c, bold=True)}{marker} {_st(inst.get('url',''), dim=True)} {user_s}{clr}")
         for bk,bv in (inst.get('boards') or {}).items():
-            done = f" {_st(f'done={bv.get('done_stack_id')}', dim=True)}" if bv.get('done_stack_id') else ""
+            done_stack_value = bv.get('done_stack_id')
+            done = f" {_st('done=' + str(done_stack_value), dim=True)}" if done_stack_value else ""
             real = bv.get('board_title')
-            real_s = f" {_st(f'\"{real}\"', dim=True)}" if real else ""
+            real_s = f" {_st(chr(34) + str(real) + chr(34), dim=True)}" if real else ""
             aliases = _board_aliases(bv)
             alias_s = f" {_st('alias=' + ','.join(aliases), fg=c)}" if aliases else ""
             click.echo(f"    {_st('•', fg=c)} {_st(bk, fg=c)}{real_s}{alias_s}  board={bv.get('board_id')} stack={bv.get('stack_id')}{done}")
@@ -1102,7 +1109,9 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
         return
     if stacks is not None:
         ui_header(f"Stacks for board {stacks} ({inst_name})", ic)
-        for s in client.list_stacks(stacks): click.echo(f"  {_st('stack', fg=ic)}={s['id']} {_st(str(s['title']), bold=True)} {_st(f'order={s.get('order')}', dim=True)}")
+        for s in client.list_stacks(stacks):
+            order_s = _st('order=' + str(s.get('order')), dim=True)
+            click.echo(f"  {_st('stack', fg=ic)}={s['id']} {_st(str(s['title']), bold=True)} {order_s}")
         return
     if cards_board:
         inst_name_res,inst_res,board=get_mapping(cfg,instance,cards_board)
@@ -1157,7 +1166,7 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
     for k,v in inst.get("boards",{}).items():
         di=f" done_stack={v['done_stack_id']}" if v.get("done_stack_id") else ""
         real = v.get('board_title')
-        real_s = f" {_st(f'\"{real}\"', dim=True)}" if real else ""
+        real_s = f" {_st(chr(34) + str(real) + chr(34), dim=True)}" if real else ""
         aliases = _board_aliases(v)
         alias_s = f" {_st('alias=' + ','.join(aliases), fg=ic)}" if aliases else ""
         click.echo(f"  {_st('•', fg=ic)} {_st(k, fg=ic, bold=True)}{real_s}{alias_s}  board={v['board_id']} stack={v['stack_id']}{_st(di, dim=True)}")
@@ -2488,7 +2497,8 @@ def nodue_cmd(ctx, instance, all_instances, all_cards, unassigned, others):
                    + _comment_counter(it['comments'])
                    + _dependency_counter(it['dependents']))
         lstr = _label_chips(it.get('labels') or [], ic)
-        click.echo(f"  {_st('●', fg=ic)} {_st(it['title'], bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st('[No due date]', dim=True)} {_st(f'(#{it["id"]})', fg=ic)}")
+        ref = _st('(#' + str(it['id']) + ')', fg=ic)
+        click.echo(f"  {_st('●', fg=ic)} {_st(it['title'], bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st('[No due date]', dim=True)} {ref}")
         if it.get('startdate'):
             click.echo(f"    {_st('Start:', fg=ic)} {it['startdate'].strftime('%Y-%m-%d %H:%M')}")
         click.echo(f"    {_st('Where:', fg=ic)} {it['instance']}/{it['board']} / {it['stack']}")
@@ -2706,7 +2716,8 @@ def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards, unassi
                    + _comment_counter(it.get('comments'))
                    + _dependency_counter(it.get('dependents')))
         lstr = _label_chips(it.get('labels') or [], ic)
-        click.echo(f"  {_st('●', fg=ic)} {marker}{_st(title, bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
+        ref = _st('(#' + str(it['id']) + ')', fg=ic)
+        click.echo(f"  {_st('●', fg=ic)} {marker}{_st(title, bold=True)}{(' '+lstr) if lstr else ''}{counter} {ref}")
         if it.get('startdate') and it.get('due'):
             span = f"Start {it['startdate'].strftime('%Y-%m-%d %H:%M')} → Due {it['due'].strftime('%Y-%m-%d %H:%M')}"
             click.echo(f"    {_st(span, dim=True)}")
@@ -2815,7 +2826,8 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
         click.echo(f"  {_st('●', fg=ic)} {marker}{_st(it['title'], bold=True)} {_st(f'[{ref}]', fg=ic)}")
         if desc:
             click.echo(f"    {_st(desc, dim=False)}")
-        click.echo(f"    {_st('Due:', fg=ic)} {due_s}  {_st('Where:', fg=ic)} {_st(f"{it['instance']}/{it['board']} / {it['stack']}", fg=ic)}")
+        where = _st(str(it['instance']) + '/' + str(it['board']) + ' / ' + str(it['stack']), fg=ic)
+        click.echo(f"    {_st('Due:', fg=ic)} {due_s}  {_st('Where:', fg=ic)} {where}")
         click.echo()
 
     if overdue_items:
@@ -2882,7 +2894,8 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
             new_due = nd.isoformat()
             client.update_card_duedate(board['board_id'], it['id'], new_due)
             moved.append((it, new_due))
-            ui_ok(f"Moved to next day {_st('#'+str(it['id']), fg=ic, bold=True)} ({_st(f"{it['instance']}/{it['board']}", fg=ic)}) - {it['title']} → {_fmt_ts(new_due)}")
+            where = _st(str(it['instance']) + '/' + str(it['board']), fg=ic)
+            ui_ok(f"Moved to next day {_st('#'+str(it['id']), fg=ic, bold=True)} ({where}) - {it['title']} → {_fmt_ts(new_due)}")
         except Exception as e:
             move_errors.append((it, e))
             ui_err(f"Error moving #{it['id']} ({it['instance']}/{it['board']}): {e}")
@@ -2890,11 +2903,14 @@ def completed_cmd(ctx, instance, all_instances, all_cards, archive, stack, desc_
     ui_kv("Completed", str(len(completed_ok)), hc)
     for it in completed_ok:
         ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
-        click.echo(f"    {_st('-', fg=ic)} {_st('#'+str(it['id']), fg=ic, bold=True)} {_st(f"{it['instance']}/{it['board']}", fg=ic)}: {it['title']}")
+        where = _st(str(it['instance']) + '/' + str(it['board']), fg=ic)
+        click.echo(f"    {_st('-', fg=ic)} {_st('#'+str(it['id']), fg=ic, bold=True)} {where}: {it['title']}")
     ui_kv("Moved", str(len(moved)), hc)
     for it, nd in moved:
         ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
-        click.echo(f"    {_st('-', fg=ic)} {_st('#'+str(it['id']), fg=ic, bold=True)} {_st(f"{it['instance']}/{it['board']}", fg=ic)}: {it['title']} {_st(f'(due {_fmt_ts(nd)})', dim=True)}")
+        where = _st(str(it['instance']) + '/' + str(it['board']), fg=ic)
+        due_s = _st('(due ' + str(_fmt_ts(nd)) + ')', dim=True)
+        click.echo(f"    {_st('-', fg=ic)} {_st('#'+str(it['id']), fg=ic, bold=True)} {where}: {it['title']} {due_s}")
     if move_errors:
         ui_kv("Move errors", str(len(move_errors)), 'red')
     click.echo()
