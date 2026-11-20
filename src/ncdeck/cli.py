@@ -6,6 +6,7 @@ browser, across multiple Nextcloud instances, from one XDG config file.
 """
 
 import os, sys, json, time, re, shutil, unicodedata, mimetypes
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,9 @@ from requests.auth import HTTPBasicAuth
 
 # ---- Configuration (XDG) ----
 CONFIG_PATHS = [Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ncdeck" / "config.yaml", Path.home() / ".ncdeck.yaml"]
+HTTP_TIMEOUT = (5, 20)  # (connect, read) seconds
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+HIDDEN_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ncdeck" / "hidden-lists.json"
 
 def get_config_path():
     """Return the first existing config path, or the XDG default.
@@ -37,7 +41,63 @@ def save_config(cfg):
     Why: the wizard, label cache and theme changes all need the same safe write.
     """
     p = get_config_path(); p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open('w') as f: yaml.safe_dump(cfg, f, sort_keys=False)
+    # App passwords live here: keep the file owner-readable only.
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    os.chmod(p, 0o600)  # mode also applies to pre-existing files
+
+def load_hidden():
+    """Read hidden-list entries, tolerating a missing or corrupt file.
+    Why: the agenda filters on these ids; bad data must not break listings.
+    """
+    try:
+        data = json.loads(HIDDEN_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    entries = data.get('hidden') if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return []
+    out = []
+    for entry in entries[:200]:
+        if not isinstance(entry, dict):
+            continue
+        instance = str(entry.get('instance') or '')[:80]
+        board = str(entry.get('board') or '')[:80]
+        try:
+            stack_id = int(entry.get('stackId'))
+        except (TypeError, ValueError):
+            continue
+        if not instance or not board:
+            continue
+        out.append({'instance': instance, 'board': board, 'stackId': stack_id,
+                    'title': str(entry.get('title') or '')[:120]})
+    return out
+
+def save_hidden(entries):
+    """Persist hidden-list entries with owner-only permissions."""
+    HIDDEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(HIDDEN_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        json.dump({'version': 1, 'hidden': entries[:200]}, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+
+def hidden_set(entries=None):
+    """Return a set of (instance, board, stackId) tuples to skip."""
+    entries = load_hidden() if entries is None else entries
+    return {(e['instance'], e['board'], e['stackId']) for e in entries}
+
+def _https_url(value):
+    """Require an absolute http(s) URL, HTTPS except for localhost.
+    Why: Login Flow credentials must never be sent over a cleartext connection.
+    """
+    raw = str(value or '').strip().rstrip('/')
+    parsed = urlparse(raw)
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+        raise click.ClickException("Enter a full server URL, e.g. https://cloud.example.com")
+    if parsed.scheme == 'http' and parsed.hostname.lower() not in ('localhost', '127.0.0.1', '::1'):
+        raise click.ClickException("Only HTTPS servers are allowed (except localhost).")
+    return raw
 
 # ---- Nextcloud Deck API client ----
 class DeckClient:
@@ -62,16 +122,31 @@ class DeckClient:
                 click.echo(f"[DEBUG] DATA: {kwargs['data'][:200]}", err=True)
             if kwargs.get('json'):
                 click.echo(f"[DEBUG] JSON: {json.dumps(kwargs['json'])[:200]}", err=True)
+
+    def _checked(self, r):
+        """Validate and decode a response without leaking server HTML.
+        Why: bound memory use and keep error messages safe for terminal output.
+        """
+        if len(r.content) > MAX_RESPONSE_BYTES:
+            raise Exception('Server response too large')
+        if not r.ok:
+            if self.debug:
+                click.echo(f"[DEBUG] BODY {r.text[:500]}", err=True)
+            raise Exception(f"{r.status_code} {r.reason} for {r.url}")
+        try:
+            return r.json()
+        except ValueError:
+            return {}
+
     def _get(self, path):
         """GET a Deck REST endpoint and return decoded JSON.
         Why: uniform status checks and debug logging for all reads.
         """
         url = f"{self.url}{path}"
         if self.debug: click.echo(f"[DEBUG] GET {url}", err=True)
-        r = self.session.get(url)
+        r = self.session.get(url, timeout=HTTP_TIMEOUT)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
-        r.raise_for_status()
-        return r.json()
+        return self._checked(r)
 
     def _post(self, path, data):
         """POST JSON to a Deck REST endpoint.
@@ -82,10 +157,9 @@ class DeckClient:
             click.echo(f"[DEBUG] POST {url}", err=True)
             try: click.echo(f"[DEBUG] DATA {json.dumps(data)[:300]}", err=True)
             except: pass
-        r = self.session.post(url, data=json.dumps(data))
+        r = self.session.post(url, data=json.dumps(data), timeout=HTTP_TIMEOUT)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
-        r.raise_for_status()
-        return r.json()
+        return self._checked(r)
 
     def _post_file(self, path, files, data=None):
         """POST multipart form data to a Deck endpoint.
@@ -98,10 +172,9 @@ class DeckClient:
         headers['OCS-APIREQUEST'] = 'true'
         url = f"{self.url}{path}"
         if self.debug: click.echo(f"[DEBUG] POST {url}", err=True)
-        r = self.session.post(url, files=files, data=data, headers=headers, timeout=60)
+        r = self.session.post(url, files=files, data=data, headers=headers, timeout=HTTP_TIMEOUT)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
-        r.raise_for_status()
-        return r.json()
+        return self._checked(r)
 
     def _clean_card_payload(self, data):
         """Strip read-only fields and normalize owner/dates before a PUT.
@@ -119,15 +192,16 @@ class DeckClient:
         o = payload.get('owner')
         if isinstance(o, dict):
             payload['owner'] = o.get('uid') or o.get('primaryKey') or ''
-        # Normalize duedate to UTC Z format if present
-        dd = payload.get('duedate')
-        if isinstance(dd, str) and dd:
-            try:
-                dt = _parse_duedate(dd)
-                if dt:
-                    payload['duedate'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-            except Exception:
-                pass
+        # Normalize Deck's date fields to UTC Z format.
+        for key in ('duedate', 'startdate'):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                try:
+                    dt = _parse_duedate(value)
+                    if dt:
+                        payload[key] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                except Exception:
+                    pass
         return payload
 
     def _put(self, path, data):
@@ -140,15 +214,9 @@ class DeckClient:
             click.echo(f"[DEBUG] PUT {url}", err=True)
             try: click.echo(f"[DEBUG] DATA {json.dumps(payload)[:800]}", err=True)
             except: pass
-        r = self.session.put(url, data=json.dumps(payload))
+        r = self.session.put(url, data=json.dumps(payload), timeout=HTTP_TIMEOUT)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:500]}", err=True)
-        if not r.ok:
-            msg = r.text.strip()
-            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:500]}")
-        try:
-            return r.json()
-        except Exception:
-            return {}
+        return self._checked(r)
     def list_boards(self):
         """List boards visible to this account.
         Why: the account wizard needs board IDs to build short config keys.
@@ -167,7 +235,7 @@ class DeckClient:
         try:
             url = f"{self.url}/ocs/v2.php/cloud/capabilities?format=json"
             if self.debug: click.echo(f"[DEBUG] GET {url}", err=True)
-            r = self.session.get(url, headers={"OCS-APIREQUEST": "true", "Accept": "application/json"})
+            r = self.session.get(url, headers={"OCS-APIREQUEST": "true", "Accept": "application/json"}, timeout=HTTP_TIMEOUT)
             if self.debug: click.echo(f"[DEBUG] RESP {r.status_code}", err=True)
             if r.status_code != 200:
                 return None
@@ -267,18 +335,9 @@ class DeckClient:
             click.echo(f"[DEBUG] PUT {url}", err=True)
             try: click.echo(f"[DEBUG] DATA {json.dumps(data)[:800]}", err=True)
             except: pass
-        r = self.session.put(url, data=json.dumps(data), headers=headers)
+        r = self.session.put(url, data=json.dumps(data), headers=headers, timeout=HTTP_TIMEOUT)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:500]}", err=True)
-        if not r.ok:
-            msg = r.text.strip()
-            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:500]}")
-        try:
-            j = r.json()
-        except Exception:
-            return {}
-        if isinstance(j, dict) and 'ocs' in j:
-            return (j.get('ocs') or {}).get('data') or {}
-        return j
+        return self._ocs_data(self._checked(r)) or {}
 
     def _ocs_data(self, j):
         """Unwrap the `ocs.data` envelope from an OCS response.
@@ -303,16 +362,9 @@ class DeckClient:
         headers.pop('Content-Type', None)
         if self.debug:
             click.echo(f"[DEBUG] GET {url} params={params}", err=True)
-        r = self.session.get(url, params=params, headers=headers)
+        r = self.session.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:500]}", err=True)
-        if not r.ok:
-            msg = r.text.strip()
-            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:500]}")
-        try:
-            j = r.json()
-        except Exception:
-            return {}
-        return self._ocs_data(j)
+        return self._ocs_data(self._checked(r)) or {}
 
     def _post_ocs(self, path, data):
         """POST JSON to an OCS endpoint.
@@ -331,16 +383,19 @@ class DeckClient:
             click.echo(f"[DEBUG] POST {url}", err=True)
             try: click.echo(f"[DEBUG] DATA {json.dumps(data)[:800]}", err=True)
             except: pass
-        r = self.session.post(url, data=json.dumps(data), headers=headers)
+        r = self.session.post(url, data=json.dumps(data), headers=headers, timeout=HTTP_TIMEOUT)
         if self.debug: click.echo(f"[DEBUG] RESP {r.status_code} {r.text[:500]}", err=True)
-        if not r.ok:
-            msg = r.text.strip()
-            raise Exception(f"{r.status_code} {r.reason} for {url}: {msg[:500]}")
-        try:
-            j = r.json()
-        except Exception:
-            return {}
-        return self._ocs_data(j)
+        return self._ocs_data(self._checked(r)) or {}
+
+    def _delete_ocs(self, path):
+        """DELETE an OCS endpoint with format=json.
+        Why: removing dependencies uses the OCS route.
+        """
+        url = f"{self.url}{path}"
+        url += '&format=json' if '?' in url else '?format=json'
+        r = self.session.delete(url, headers={'OCS-APIREQUEST': 'true', 'Accept': 'application/json'}, timeout=HTTP_TIMEOUT)
+        if self.debug: click.echo(f"[DEBUG] DELETE {url}", err=True)
+        return self._ocs_data(self._checked(r)) or {}
 
     def list_comments(self, card_id, limit=50, offset=0):
         """List a card's comments.
@@ -387,14 +442,17 @@ class DeckClient:
             "owner": self._owner_uid(card),
             "order": int(card.get('order') if card.get('order') is not None else 0),
             "duedate": card.get('duedate'),
+            "startdate": card.get('startdate') or card.get('startDate'),
             "archived": bool(card.get('archived')),
             "done": card.get('done'),
         }
-        # Normalize duedate
-        if isinstance(payload.get('duedate'), str) and payload['duedate']:
-            dt = _parse_duedate(payload['duedate'])
-            if dt:
-                payload['duedate'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Normalize duedate and startdate
+        for key in ('duedate', 'startdate'):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                dt = _parse_duedate(value)
+                if dt:
+                    payload[key] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         # Normalize done
         if isinstance(payload.get('done'), str) and payload['done']:
             dt = _parse_duedate(payload['done'])
@@ -425,6 +483,24 @@ class DeckClient:
         """
         card = self.get_card(board_id, card_id)
         return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/assignUser", {"userId": user_id})
+
+    def assign_label(self, board_id, card_id, label_id):
+        """Assign a label to a card."""
+        card = self.get_card(board_id, card_id)
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/assignLabel", {"labelId": int(label_id)})
+
+    def remove_label(self, board_id, card_id, label_id):
+        """Remove a label from a card."""
+        card = self.get_card(board_id, card_id)
+        return self._put(f"/index.php/apps/deck/api/v1.0/boards/{board_id}/stacks/{card.get('stackId')}/cards/{card_id}/removeLabel", {"labelId": int(label_id)})
+
+    def assign_dependent(self, board_id, card_id, dependent_id):
+        """Mark another card as dependent on this one (Deck 1.18+)."""
+        self._post_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/dependentCards/{dependent_id}", {"boardId": board_id})
+
+    def remove_dependent(self, card_id, dependent_id):
+        """Remove a dependent card (Deck 1.18+)."""
+        self._delete_ocs(f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/dependentCards/{dependent_id}")
 
     def unassign_card(self, board_id, card_id, user_id):
         """Unassign a user from a card.
@@ -469,9 +545,9 @@ class DeckClient:
         except: 
             try: return self._get(f"/index.php/apps/deck/api/v1.1/boards/{board_id}/labels")
             except: raise
-    def create_card(self, board_id, stack_id, title, description="", duedate=None, labels=None, assigned_users=None):
-        """Create a card, then apply labels and assignees with follow-up calls.
-        Why: the create payload alone does not reliably persist labels across versions.
+    def create_card(self, board_id, stack_id, title, description="", duedate=None, labels=None, assigned_users=None, startdate=None):
+        """Create a card, then apply fields the create endpoint does not persist.
+        Why: labels, assignees and Deck 1.18+ fields need follow-up calls.
         """
         payload={"title":title,"description":description,"type":"plain","order":999}
         if duedate: payload["duedate"]=duedate
@@ -495,6 +571,11 @@ class DeckClient:
                 except Exception as e:
                     if self.debug: click.echo(f"[DEBUG] assignUser failed for {u}: {e}", err=True)
                     raise
+        if startdate:
+            try:
+                self.update_card(board_id, card_id, startdate=startdate)
+            except Exception as e:
+                if self.debug: click.echo(f"[DEBUG] startdate update failed: {e}", err=True)
         return card
 
     def upload_attachment(self, board_id, card_id, file_path):
@@ -725,7 +806,7 @@ def account_add_cmd(instance_name, url, theme_color):
     if not isinstance(cfg, dict): cfg = {}
     if 'instances' not in cfg or not isinstance(cfg['instances'], dict): cfg['instances'] = {}
     if not url: url = click.prompt("Nextcloud server URL (e.g. https://cloud.example.com)")
-    url = url.rstrip('/')
+    url = _https_url(url)
     ui_info(f"Starting Nextcloud Login Flow v2 for {url}...", 'cyan')
     resp = requests.post(f"{url}/index.php/login/v2", headers={"User-Agent": "ncdeck-cli"}, timeout=30)
     resp.raise_for_status()
@@ -744,7 +825,7 @@ def account_add_cmd(instance_name, url, theme_color):
             time.sleep(2)
         except: time.sleep(2); continue
     if not creds: raise click.ClickException("Authentication timed out or failed")
-    server = creds.get('server', url); login_name = creds.get('loginName') or creds.get('user'); app_password = creds.get('appPassword')
+    server = _https_url(creds.get('server', url)); login_name = creds.get('loginName') or creds.get('user'); app_password = creds.get('appPassword')
     ui_ok(f"Authenticated as {login_name} on {server}")
     if not instance_name:
         default_name = login_name if login_name and login_name not in cfg['instances'] else f"nc_{login_name}"
@@ -1081,6 +1162,81 @@ def list_cmd(ctx,instance,boards,stacks,labels_board,cards_board,stack,all_cards
         alias_s = f" {_st('alias=' + ','.join(aliases), fg=ic)}" if aliases else ""
         click.echo(f"  {_st('•', fg=ic)} {_st(k, fg=ic, bold=True)}{real_s}{alias_s}  board={v['board_id']} stack={v['stack_id']}{_st(di, dim=True)}")
 
+@cli.command("lists", help="Show board lists (stacks) and which are hidden from the agenda.")
+@click.option("-i", "--instance")
+@click.option("-A", "--all-instances", is_flag=True, help="Show lists for every configured instance")
+@click.pass_context
+def lists_cmd(ctx, instance, all_instances):
+    """Show configured lists and their hidden state.
+    Why: hidden lists are agenda-only, so the setting needs a discoverable view.
+    """
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg = load_config()
+    instances = cfg.get('instances') or {}
+    if not isinstance(instances, dict) or not instances:
+        raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
+    if all_instances:
+        selected = list(instances.items())[:50]
+    else:
+        name = instance or cfg.get('default_instance')
+        if name not in instances:
+            raise click.ClickException(f"Instance '{name}' not found in config")
+        selected = [(name, instances[name])]
+    hidden = hidden_set()
+    for name, inst in selected:
+        if not isinstance(inst, dict): continue
+        ic = _inst_color(inst)
+        ui_header(f"Lists: {name}", ic)
+        client = DeckClient(inst, debug=debug)
+        for bkey, board in list((inst.get('boards') or {}).items())[:100]:
+            if not isinstance(board, dict): continue
+            bid = board.get('board_id')
+            if bid is None: continue
+            real = board.get('board_title') or bkey
+            click.echo(f"  {_st(bkey, fg=ic, bold=True)} {_st(f'({real})', dim=True)}")
+            try:
+                stacks = client.list_stacks(bid)
+            except Exception as e:
+                click.echo(f"    {_st('(could not fetch stacks: ' + str(e) + ')', dim=True)}")
+                continue
+            for stack in (stacks or [])[:100]:
+                if not isinstance(stack, dict): continue
+                sid = stack.get('id'); title = str(stack.get('title') or '')
+                if sid is None: continue
+                flag = 'hidden' if (name, bkey, int(sid)) in hidden else 'shown'
+                color = 'yellow' if flag == 'hidden' else 'green'
+                click.echo(f"    {_st(f'[{flag}]', fg=color)} {title} {_st(f'(id={sid})', dim=True)}")
+        click.echo()
+
+@cli.command("hidden", help="Hide or unhide a board list (stack) for the agenda.")
+@click.argument("board_key")
+@click.argument("stack_id", type=int)
+@click.argument("state", type=click.Choice(['on', 'off']))
+@click.option("-i", "--instance")
+@click.pass_context
+def hidden_cmd(ctx, board_key, stack_id, state, instance):
+    """Hide or unhide one list without affecting card editing.
+    Why: the agenda should skip whole lists while they stay editable elsewhere.
+    """
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg = load_config(); inst_name, inst, board = get_mapping(cfg, instance, board_key)
+    client = DeckClient(inst, debug=debug)
+    titles = {}
+    for stack in (client.list_stacks(board['board_id']) or []):
+        if isinstance(stack, dict) and stack.get('id') is not None:
+            titles[int(stack['id'])] = str(stack.get('title') or '')
+    if stack_id not in titles:
+        raise click.ClickException(f"List {stack_id} not found on {inst_name}/{board_key}")
+    key = (inst_name, board_key, stack_id)
+    entries = [e for e in load_hidden()
+               if (e['instance'], e['board'], e['stackId']) != key]
+    if state == 'on':
+        entries.append({'instance': inst_name, 'board': board_key,
+                        'stackId': stack_id, 'title': titles[stack_id]})
+    save_hidden(entries)
+    verb = 'Hidden' if state == 'on' else 'Unhidden'
+    ui_ok(f"{verb} list {_st(titles[stack_id], bold=True)} (id={stack_id}) on {_st(f'{inst_name}/{board_key}', fg=_inst_color(inst))}")
+
 @cli.command("labels", help="List labels configured for a board (cached from account setup).")
 @click.argument("board_key")
 @click.option("-i","--instance")
@@ -1120,12 +1276,13 @@ def labels_cmd(ctx, board_key, instance, refresh):
 @click.option("-f","--description-file",type=click.Path(exists=True,path_type=Path))
 @click.option("-p","--prefix",default="")
 @click.option("--due-date", help="Due date/time (e.g. 2026-06-10 13:00, 2026-06-10, today, tomorrow; date-only defaults to 17:00)")
+@click.option("--start-date", help="Start date/time (same formats as --due-date; Deck 1.18+)")
 @click.option("-t","--tag",multiple=True)
 @click.option("-a","--assign",multiple=True)
 @click.option("--attach",type=click.Path(exists=True,path_type=Path),multiple=True,help="Attach file(s) to the created card")
 @click.option("-i","--instance")
 @click.pass_context
-def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,tag,assign,attach,instance):
+def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,start_date,tag,assign,attach,instance):
     """CLI wrapper that assembles a new card.
     Why: combines prefix, description, tags, due date, assignees and attachments.
     """
@@ -1135,10 +1292,12 @@ def create_cmd(ctx,board_key,title,description,description_file,prefix,due_date,
     ct=f"[{prefix}] {title}" if prefix else title; cd=read_description(description,description_file)
     lids=resolve_label_ids(client,board,list(tag),cfg=cfg,inst_name=inst_name,board_key=canonical) if tag else []
     due_norm = _normalize_create_duedate(due_date) if due_date else None
+    start_norm = _normalize_create_duedate(start_date) if start_date else None
     assigned_users = list(assign) if assign else ([inst['username']] if inst.get('username') else None)
     try:
-        card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_norm,labels=lids if lids else None,assigned_users=assigned_users)
+        card=client.create_card(board["board_id"],board["stack_id"],ct,cd,duedate=due_norm,labels=lids if lids else None,assigned_users=assigned_users,startdate=start_norm)
         ui_ok(f"Created card {_st('#'+str(card['id']), fg=ic, bold=True)} {_st(card['title'], bold=True)} in {_st(f'{inst_name}/{board_key}', fg=ic)}")
+        if start_norm: ui_kv("Start", _fmt_ts(start_norm), ic)
         if due_norm: ui_kv("Due", _fmt_ts(due_norm), ic)
         if tag: ui_kv("Tags", ', '.join(tag), ic)
         if assigned_users: ui_kv("Assigned", ', '.join(assigned_users), ic)
@@ -1533,6 +1692,8 @@ def show_cmd(ctx,board_key,card_id,instance,raw_output):
         ui_kv("Done at", _fmt_ts(done_ts), ic)
     elif is_done:
         ui_kv("Done at", _st('unknown (in done stack)', dim=True), ic)
+    start_raw = card.get('startdate') or card.get('startDate')
+    ui_kv("Start", _fmt_ts(start_raw) if start_raw else 'None', ic)
     ui_kv("Due", _st(due_val, fg='red', bold=True) if is_overdue else due_val, ic)
     if is_overdue:
         ui_kv("Overdue", _st(f'YES — {due_val}', fg='red', bold=True), ic)
@@ -2035,19 +2196,43 @@ def ui_card_ref(card_id, title=None, color='cyan'):
         return f"{ref} {title}"
     return ref
 
+def _card_label_ids(card):
+    """Return the label ids present on a card."""
+    out = []
+    for label in (card.get('labels') or []):
+        if isinstance(label, dict):
+            lid = label.get('id')
+            try:
+                lid = int(lid)
+            except (TypeError, ValueError):
+                continue
+            if lid not in out:
+                out.append(lid)
+    return out
+
+def _card_assignment_uids(card):
+    """Return the user ids assigned to a card."""
+    out = []
+    for a in (card.get('assignedUsers') or card.get('assignedusers') or []):
+        if not isinstance(a, dict): continue
+        p = a.get('participant') or {}
+        uid = (p.get('uid') or p.get('primaryKey') or a.get('uid') or a.get('primaryKey') or '')
+        if uid: out.append(str(uid))
+    return out
+
+def _card_assignment_kind(card, username):
+    """Classify a card as mine / unassigned / others for agenda filters."""
+    uids = [u.lower() for u in _card_assignment_uids(card)]
+    if not uids: return 'unassigned'
+    if str(username or '').lower() in uids: return 'mine'
+    return 'others'
+
 def _card_assigned_to(card, username):
     """Check whether a card is assigned to a given user.
     Why: shared boards default to showing only the current user's cards.
     """
     if not username: return False
-    u = str(username).lower()
-    for a in (card.get('assignedUsers') or card.get('assignedusers') or []):
-        if not isinstance(a, dict): continue
-        p = a.get('participant') or {}
-        uid = (p.get('uid') or p.get('primaryKey') or a.get('uid') or a.get('primaryKey') or '')
-        if str(uid).lower() == u:
-            return True
-    return False
+    return str(username).lower() in [u.lower() for u in _card_assignment_uids(card)]
 
 def _board_is_shared(client, board_id, username):
     """Detect boards owned by another user.
@@ -2103,76 +2288,351 @@ def _overdue_flag():
     """
     return _st('OVERDUE', fg='red', bold=True)
 
-def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False, include_done=True, all_cards=False):
-    """Collect due cards across configured instances and boards.
-    Why: agenda and completed share filtering, done exclusion and shared-board logic.
+def _gather_agenda(cfg, instance_name, all_instances, start, end, debug=False,
+                   include_done=True, all_cards=False, include_starts=False,
+                   window_start=None, include_unassigned=False, include_others=False):
+    """Collect due (and optionally start) occurrences across instances and boards.
+    Why: agenda, nodue and completed share filtering, hidden-list and assignment logic.
     """
+    window_start = window_start or start
+    hidden = hidden_set()
     items = []
     if all_instances:
         inst_items = list((cfg.get('instances') or {}).items())
     else:
         iname = instance_name or cfg.get('default_instance')
-        if not iname: raise click.ClickException("No instance specified and no default_instance in config")
+        if not iname:
+            raise click.ClickException("No instance specified and no default_instance in config")
         inst = (cfg.get('instances') or {}).get(iname)
-        if not inst: raise click.ClickException(f"Instance '{iname}' not found")
+        if not inst:
+            raise click.ClickException(f"Instance '{iname}' not found")
         inst_items = [(iname, inst)]
     for iname, inst in inst_items:
         try:
             client = DeckClient(inst, debug=debug)
         except Exception:
             continue
+        username = inst.get('username')
         for bkey, bval in (inst.get('boards') or {}).items():
+            bid = bval.get('board_id')
+            if bid is None:
+                continue
             try:
-                cards = client.list_cards(bval['board_id'])
+                cards = client.list_cards(bid)
             except Exception:
                 continue
-            filter_username = None
-            if not all_cards:
-                uname = inst.get('username')
-                if uname and _board_is_shared(client, bval['board_id'], uname):
-                    filter_username = uname
             for c in cards:
-                if c.get('archived'): continue
-                # Done cards (even done-stack cards with done=null) must not appear in an agenda.
+                if c.get('archived'):
+                    continue
                 if not include_done and _card_is_done(c, bval):
                     continue
-                if filter_username and not _card_assigned_to(c, filter_username):
+                stack_id = c.get('_stack_id')
+                if stack_id is None:
+                    stack_id = c.get('stackId')
+                try:
+                    stack_id = int(stack_id)
+                except (TypeError, ValueError):
+                    stack_id = None
+                if stack_id is not None and (iname, bkey, stack_id) in hidden:
                     continue
+                kind = _card_assignment_kind(c, username)
+                if not all_cards:
+                    if kind == 'unassigned' and not include_unassigned:
+                        continue
+                    if kind == 'others' and not include_others:
+                        continue
                 dd = _parse_duedate(c.get('duedate'))
-                if not dd: continue
-                ddl = dd.astimezone()
-                if start <= ddl < end:
-                    st = c.get('_stack_title') or c.get('stackTitle') or f"stack {c.get('stackId','?')}"
-                    td = c.get('_tasks_done'); tt = c.get('_tasks_total')
-                    if tt is None:
-                        td, tt = _task_list_counts(c.get('description') or '')
-                    items.append({
-                        'due': ddl,
-                        'title': c.get('title') or '(untitled)',
-                        'desc': c.get('description') or '',
-                        'instance': iname,
-                        'board': bkey,
-                        'stack': st,
-                        'id': c.get('id'),
-                        'tasks_done': td,
-                        'tasks_total': tt,
-                        'comments': _card_comments_count(c),
-                        'dependents': _card_dependent_ids(c),
-                        'labels': c.get('labels') or [],
-                        'overdue': _card_is_overdue(c, bval),
-                    })
-    items.sort(key=lambda x: (x['due'], x['instance'], x['board'], x['title']))
+                sd = _parse_duedate(c.get('startdate') or c.get('startDate')) if include_starts else None
+                ddl = dd.astimezone() if dd else None
+                sdl = sd.astimezone() if sd else None
+                occurrences = []
+                if ddl is not None and start <= ddl < end:
+                    occurrences.append(('due', ddl))
+                if sdl is not None:
+                    same_day = ddl is not None and sdl.date() == ddl.date()
+                    if window_start <= sdl < end and not same_day:
+                        occurrences.append(('start', sdl))
+                if not occurrences:
+                    continue
+                st = c.get('_stack_title') or c.get('stackTitle') or f"stack {c.get('stackId','?')}"
+                td = c.get('_tasks_done'); tt = c.get('_tasks_total')
+                if tt is None:
+                    td, tt = _task_list_counts(c.get('description') or '')
+                common = {
+                    'due': ddl,
+                    'startdate': sdl,
+                    'title': c.get('title') or '(untitled)',
+                    'desc': c.get('description') or '',
+                    'instance': iname,
+                    'board': bkey,
+                    'stack': st,
+                    'id': c.get('id'),
+                    'tasks_done': td,
+                    'tasks_total': tt,
+                    'comments': _card_comments_count(c),
+                    'dependents': _card_dependent_ids(c),
+                    'labels': c.get('labels') or [],
+                    'overdue': _card_is_overdue(c, bval),
+                    'assignment': kind,
+                }
+                for occ_kind, occ in occurrences:
+                    item = dict(common)
+                    item['occIso'] = occ.isoformat()
+                    item['occKind'] = occ_kind
+                    item['earlier'] = bool(occ_kind == 'due' and occ < window_start)
+                    items.append(item)
+    items.sort(key=lambda x: (x['occIso'], x['instance'], x['board'], x['title']))
     return items
 
 # ---- Agenda, daily review and bulk archive ----
+def _gather_undated(cfg, instance_name, all_instances, debug=False,
+                    include_unassigned=False, include_others=False):
+    """Collect open cards with no due date for `nodue`.
+    Why: the plugin's second agenda mode needs the same hidden/filter rules.
+    """
+    hidden = hidden_set()
+    items = []
+    if all_instances:
+        inst_items = list((cfg.get('instances') or {}).items())
+    else:
+        iname = instance_name or cfg.get('default_instance')
+        if not iname:
+            raise click.ClickException("No instance specified and no default_instance in config")
+        inst = (cfg.get('instances') or {}).get(iname)
+        if not inst:
+            raise click.ClickException(f"Instance '{iname}' not found")
+        inst_items = [(iname, inst)]
+    for iname, inst in inst_items:
+        try:
+            client = DeckClient(inst, debug=debug)
+        except Exception:
+            continue
+        username = inst.get('username')
+        for bkey, board in (inst.get('boards') or {}).items():
+            bid = board.get('board_id')
+            if bid is None:
+                continue
+            try:
+                cards = client.list_cards(bid)
+            except Exception:
+                continue
+            for c in cards:
+                if c.get('archived') or _card_is_done(c, board):
+                    continue
+                if _parse_duedate(c.get('duedate')):
+                    continue
+                stack_id = c.get('_stack_id')
+                if stack_id is None:
+                    stack_id = c.get('stackId')
+                try:
+                    stack_id = int(stack_id)
+                except (TypeError, ValueError):
+                    stack_id = None
+                if stack_id is not None and (iname, bkey, stack_id) in hidden:
+                    continue
+                kind = _card_assignment_kind(c, username)
+                if kind == 'unassigned' and not include_unassigned:
+                    continue
+                if kind == 'others' and not include_others:
+                    continue
+                sd = _parse_duedate(c.get('startdate') or c.get('startDate'))
+                td = c.get('_tasks_done'); tt = c.get('_tasks_total')
+                if tt is None:
+                    td, tt = _task_list_counts(c.get('description') or '')
+                items.append({
+                    'id': c.get('id'),
+                    'title': c.get('title') or '(untitled)',
+                    'startdate': sd.astimezone() if sd else None,
+                    'instance': iname,
+                    'board': bkey,
+                    'stack': c.get('_stack_title') or c.get('stackTitle') or f"stack {c.get('stackId','?')}",
+                    'tasks_done': td,
+                    'tasks_total': tt,
+                    'comments': _card_comments_count(c),
+                    'dependents': _card_dependent_ids(c),
+                    'labels': c.get('labels') or [],
+                })
+    items.sort(key=lambda x: (x['instance'], x['board'], x['title']))
+    return items[:200]
+
+
+@cli.command("nodue", help="List open cards that have no due date.")
+@click.option("-i", "--instance")
+@click.option("-A", "--all-instances", is_flag=True, help="Search all configured instances")
+@click.option("--all", "all_cards", is_flag=True, help="Include unassigned cards and cards assigned to others")
+@click.option("--unassigned", is_flag=True, help="Also show unassigned cards")
+@click.option("--others", is_flag=True, help="Also show cards assigned to other users")
+@click.pass_context
+def nodue_cmd(ctx, instance, all_instances, all_cards, unassigned, others):
+    """List undated cards with the same filters as the agenda.
+    Why: work without a deadline still needs a place to be reviewed.
+    """
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg = load_config()
+    if not isinstance(cfg, dict) or not cfg.get('instances'):
+        raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
+    include_unassigned = bool(all_cards or unassigned)
+    include_others = bool(all_cards or others)
+    items = _gather_undated(cfg, instance, all_instances, debug=debug,
+                            include_unassigned=include_unassigned, include_others=include_others)
+    scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
+    hc = 'cyan' if all_instances else _inst_color(cfg.get('instances', {}).get(scope))
+    ui_header(f"No due date  [{scope}]", hc)
+    if not items:
+        ui_dim("  No undated cards found.")
+        click.echo()
+        return
+    for it in items:
+        ic = _inst_color(cfg.get('instances', {}).get(it['instance']))
+        counter = (_task_counter(it['tasks_done'], it['tasks_total'])
+                   + _comment_counter(it['comments'])
+                   + _dependency_counter(it['dependents']))
+        lstr = _label_chips(it.get('labels') or [], ic)
+        click.echo(f"  {_st('●', fg=ic)} {_st(it['title'], bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st('[No due date]', dim=True)} {_st(f'(#{it["id"]})', fg=ic)}")
+        if it.get('startdate'):
+            click.echo(f"    {_st('Start:', fg=ic)} {it['startdate'].strftime('%Y-%m-%d %H:%M')}")
+        click.echo(f"    {_st('Where:', fg=ic)} {it['instance']}/{it['board']} / {it['stack']}")
+        click.echo()
+    ui_dim(f"Total: {len(items)} card(s)")
+    click.echo()
+
+
+@cli.command("edit", help="Edit a card's title, dates, labels, assignees, dependency, done state and stack.")
+@click.argument("board_key")
+@click.argument("card_id", type=int)
+@click.option("-i", "--instance")
+@click.option("--title")
+@click.option("-d", "--description")
+@click.option("--due-date", help="New due date; 'none' clears it")
+@click.option("--start-date", help="New start date; 'none' clears it (Deck 1.18+)")
+@click.option("--clear-due", is_flag=True, help="Clear the due date")
+@click.option("--clear-start", is_flag=True, help="Clear the start date")
+@click.option("-t", "--tag", multiple=True, help="Replace the card's labels with these names")
+@click.option("-a", "--assign", multiple=True, help="Replace the card's assignees with these users")
+@click.option("--dependency", type=int, help="Replace dependent card id; 0 clears them")
+@click.option("--done/--not-done", default=None, help="Mark done (and move to done stack) or clear it")
+@click.option("--stack", type=int, help="Move the card to this stack")
+@click.pass_context
+def edit_cmd(ctx, board_key, card_id, instance, title, description, due_date, start_date,
+             clear_due, clear_start, tag, assign, dependency, done, stack):
+    """Apply a GET-modify-PUT update plus label/assignee/dependency diffs.
+    Why: the Omarchy plugin edits every card field in one view; the CLI needs parity.
+    """
+    debug = ctx.obj.get('debug') if ctx.obj else False
+    cfg = load_config()
+    inst_name, inst, board, canonical = get_mapping_full(cfg, instance, board_key)
+    client = DeckClient(inst, debug=debug)
+    ic = _inst_color(inst)
+    warnings = []
+
+    changes = {}
+    if title is not None:
+        changes['title'] = title
+    if description is not None:
+        changes['description'] = description
+    if clear_due:
+        changes['duedate'] = None
+    elif due_date is not None:
+        changes['duedate'] = None if due_date.lower() in ('none', 'clear') else _normalize_create_duedate(due_date)
+    if clear_start:
+        changes['startdate'] = None
+    elif start_date is not None:
+        changes['startdate'] = None if start_date.lower() in ('none', 'clear') else _normalize_create_duedate(start_date)
+    if done is not None:
+        changes['done'] = (datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                           if done else None)
+    if changes:
+        client.update_card(board['board_id'], card_id, **changes)
+
+    fresh = client.get_card(board['board_id'], card_id)
+    base = (f"/index.php/apps/deck/api/v1.0/boards/{board['board_id']}"
+            f"/stacks/{fresh.get('stackId')}/cards/{card_id}")
+
+    if tag:
+        try:
+            wanted = set(resolve_label_ids(client, board, list(tag), cfg=cfg,
+                                           inst_name=inst_name, board_key=canonical))
+        except Exception as e:
+            warnings.append(f"Labels: {e}")
+        else:
+            current = set(_card_label_ids(fresh))
+            for lid in sorted(wanted - current):
+                try:
+                    client.assign_label(board['board_id'], card_id, lid)
+                except Exception:
+                    warnings.append(f"Could not add label {lid}")
+            for lid in sorted(current - wanted):
+                try:
+                    client.remove_label(board['board_id'], card_id, lid)
+                except Exception:
+                    warnings.append(f"Could not remove label {lid}")
+
+    if assign:
+        wanted_users = {str(u) for u in assign}
+        current_users = set(_card_assignment_uids(fresh))
+        for uid in sorted(wanted_users - current_users):
+            try:
+                client.assign_card(board['board_id'], card_id, uid)
+            except Exception:
+                warnings.append(f"Could not assign {uid}")
+        for uid in sorted(current_users - wanted_users):
+            try:
+                client.unassign_card(board['board_id'], card_id, uid)
+            except Exception:
+                warnings.append(f"Could not unassign {uid}")
+
+    if dependency is not None:
+        wanted_deps = set() if dependency == 0 else {dependency}
+        current_deps = set(_card_dependent_ids(fresh))
+        for dep in sorted(current_deps - wanted_deps):
+            try:
+                client.remove_dependent(card_id, dep)
+            except Exception:
+                warnings.append(f"Could not remove dependency #{dep}")
+        for dep in sorted(wanted_deps - current_deps):
+            try:
+                client.assign_dependent(board['board_id'], card_id, dep)
+            except Exception:
+                warnings.append(f"Could not add dependency #{dep} (Deck 1.18+)")
+
+    current_stack = fresh.get('stackId')
+    try:
+        current_stack = int(current_stack)
+    except (TypeError, ValueError):
+        current_stack = None
+    done_stack = board.get('done_stack_id')
+    try:
+        done_stack = int(done_stack) if done_stack is not None else None
+    except (TypeError, ValueError):
+        done_stack = None
+    target_stack = None
+    if done is True and done_stack is not None:
+        target_stack = done_stack
+    elif stack is not None:
+        target_stack = stack
+    elif done is False and done_stack is not None and current_stack == done_stack and board.get('stack_id') is not None:
+        target_stack = board['stack_id']
+    if target_stack is not None and target_stack != current_stack:
+        try:
+            client.move_card(board['board_id'], card_id, target_stack)
+        except Exception:
+            warnings.append(f"Could not move the card to stack {target_stack}")
+
+    ui_ok(f"Updated {_st('#'+str(card_id), fg=ic, bold=True)} in {_st(f'{inst_name}/{board_key}', fg=ic)}")
+    for w in warnings[:5]:
+        ui_warn(w)
+
 @cli.command("agenda", help="Show cards by due date; today also includes earlier overdue cards.")
 @click.argument("period", default="today", required=False)
 @click.argument("end_date", required=False)
 @click.option("-i", "--instance")
 @click.option("-A", "--all-instances", is_flag=True, help="Show agenda from all configured instances")
-@click.option("--all", "all_cards", is_flag=True, help="Show all cards (include unassigned on shared boards)")
+@click.option("--all", "all_cards", is_flag=True, help="Include unassigned cards and cards assigned to others")
+@click.option("--unassigned", is_flag=True, help="Also show unassigned cards")
+@click.option("--others", is_flag=True, help="Also show cards assigned to other users")
+@click.option("--anchor", metavar="YYYY-MM-DD", help="Start a relative week/month at this date")
 @click.pass_context
-def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards):
+def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards, unassigned, others, anchor):
     """Show cards due in a period or date range, plus earlier overdue ones for today.
     Why: daily planning should surface unfinished items that slipped past their due date.
     """
@@ -2180,6 +2640,9 @@ def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards):
     cfg = load_config()
     if not isinstance(cfg, dict) or not cfg.get('instances'):
         raise click.ClickException("No accounts configured. Run `ncdeck account add` to add one.")
+    include_unassigned = bool(all_cards or unassigned)
+    include_others = bool(all_cards or others)
+
     start_date = _parse_agenda_date(period, 'date')
     if start_date is not None:
         end_dt = None
@@ -2194,19 +2657,32 @@ def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards):
     else:
         if end_date:
             raise click.ClickException("END_DATE can only be used together with a start date (YYYY-MM-DD)")
-        start, end, p = _agenda_range(period)
-        # `today` (and the default) should also surface open cards left over
-        # from previous days; explicit periods/dates stay strictly bounded.
-        include_earlier = (p == 'today')
+        if anchor:
+            anchored = _parse_agenda_date(anchor, '--anchor')
+            if anchored is None:
+                raise click.ClickException("Invalid --anchor. Use YYYY-MM-DD.")
+            p = (period or 'today').lower()
+            if p not in ('today', 'day', 'week', 'month'):
+                raise click.ClickException(f"Unknown period '{period}'. Use: today, tomorrow, week, month")
+            days = 7 if p == 'week' else (30 if p == 'month' else 1)
+            start, end = anchored, anchored + timedelta(days=days)
+            include_earlier = False
+        else:
+            start, end, p = _agenda_range(period)
+            include_earlier = (p == 'today')
     display_start = start
     gather_start = start - timedelta(days=3650) if include_earlier else start
-    items = _gather_agenda(cfg, instance, all_instances, gather_start, end, debug=debug, include_done=False, all_cards=all_cards)
+    items = _gather_agenda(
+        cfg, instance, all_instances, gather_start, end, debug=debug,
+        include_done=False, include_starts=True, window_start=start,
+        include_unassigned=include_unassigned, include_others=include_others,
+    )
     scope = "all instances" if all_instances else (instance or cfg.get('default_instance') or '?')
     hc = 'cyan' if all_instances else _inst_color(cfg.get('instances',{}).get(scope))
     header = f"Agenda: {p}  ({display_start.strftime('%Y-%m-%d')} → {(end - timedelta(seconds=1)).strftime('%Y-%m-%d')})  [{scope}]"
     ui_header(header, hc)
     if include_earlier:
-        earlier = [it for it in items if it['due'] < start]
+        earlier = [it for it in items if it.get('earlier')]
         if earlier:
             click.echo(_st(f"  + {len(earlier)} overdue card(s) from earlier days", fg='red', dim=True))
     if not items:
@@ -2215,16 +2691,27 @@ def agenda_cmd(ctx, period, end_date, instance, all_instances, all_cards):
         return
     for it in items:
         ic = _inst_color(cfg.get('instances',{}).get(it['instance']))
-        due_s = it['due'].strftime('%a %Y-%m-%d %H:%M')
+        occ = _parse_duedate(it['occIso']).astimezone()
+        occ_s = occ.strftime('%a %Y-%m-%d %H:%M')
+        is_start = it.get('occKind') == 'start'
+        is_overdue = bool(it.get('earlier') or (it.get('overdue') and not is_start))
+        marker = ''
+        if is_overdue:
+            marker = _overdue_flag() + ' '
+        elif is_start:
+            marker = _st('STARTS', fg=ic, bold=True) + ' '
         title = it['title']
         loc = f"{it['instance']}/{it['board']} / {it['stack']}"
         counter = (_task_counter(it.get('tasks_done'), it.get('tasks_total'))
                    + _comment_counter(it.get('comments'))
                    + _dependency_counter(it.get('dependents')))
         lstr = _label_chips(it.get('labels') or [], ic)
-        marker = _overdue_flag() + ' ' if it.get('overdue') else ''
         click.echo(f"  {_st('●', fg=ic)} {marker}{_st(title, bold=True)}{(' '+lstr) if lstr else ''}{counter} {_st(f'(#{it["id"]})', fg=ic)}")
-        ui_kv("Due", _st(due_s, fg='red', bold=True) if it.get('overdue') else due_s, ic, label_width=10)
+        if it.get('startdate') and it.get('due'):
+            span = f"Start {it['startdate'].strftime('%Y-%m-%d %H:%M')} → Due {it['due'].strftime('%Y-%m-%d %H:%M')}"
+            click.echo(f"    {_st(span, dim=True)}")
+        label = "Start" if is_start else "Due"
+        ui_kv(label, _st(occ_s, fg='red', bold=True) if is_overdue else occ_s, ic, label_width=10)
         ui_kv("Where", loc, ic, label_width=10)
         click.echo()
     ui_dim(f"Total: {len(items)} card(s)")

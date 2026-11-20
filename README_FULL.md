@@ -22,17 +22,19 @@
 - **Board aliases** - Give a board an extra short alias (e.g. `DW` for `Digital Workplace`), usable anywhere a board key is accepted; `ncdeck list --boards` shows the real board name next to its mapped name and alias
 - **Custom prefixes** - Add any prefix to card titles on-the-fly with `-p/--prefix`
 - **Markdown descriptions** - Pass descriptions directly, from a file (`-f`), or via piped stdin
-- **Due dates** - Set due dates in ISO format
+- **Start and due dates** - Set both in ISO format (or `today`/`tomorrow`); start dates appear as `STARTS` in the agenda (Deck 1.18+)
+- **Unified card editing** - `ncdeck edit` changes title, dates, labels, assignees, dependent cards, done state and stack in one operation
 - **Tags/labels by name** - Use human-readable label names with `-t/--tag` instead of numeric IDs
 - **Cached label discovery** - Labels (with colors) are discovered when a board is added and stored in config; list them with `ncdeck labels` or refresh with `ncdeck labels BOARD_KEY --refresh`
 - **Mark as done** - Mark cards as done and automatically move them to a configured done stack
 - **Move cards** - Move cards between any stacks on a board
 - **Archive cards** - Optionally archive cards instead of moving to done stack
 - **Comments, descriptions, and attachments** - Add comments, replace/amend descriptions, and attach files to existing cards
-- **Agenda and daily review** - `agenda yesterday|today|tomorrow|week|month`, an absolute `YYYY-MM-DD` date, or a `START END` range (plus `-A` for all instances); `today` also lists overdue cards from earlier days, and interactive `completed` marks done or pushes cards to the next day
-- **Rich card listings** - Task/comment/dependency counters, colored label chips, and prominent overdue/done status in `list --cards`, `search`, `show`, and `agenda`
+- **Agenda and daily review** - `agenda yesterday|today|tomorrow|week|month`, an absolute `YYYY-MM-DD` date, or a `START END` range; `--anchor` starts a relative period at any date, `--unassigned`/`--others` widen the assignment filter, and `today` also lists earlier overdue cards. `nodue` lists cards without a deadline; `completed` marks done or pushes cards to the next day
+- **Hidden lists** - `ncdeck lists` and `ncdeck hidden BOARD STACK on|off` exclude whole lists from the agenda while keeping their cards editable
+- **Rich card listings** - Task/comment/dependency counters, colored label chips, and prominent overdue/done status in `list --cards`, `search`, `show`, `nodue`, and `agenda`
 - **Per-instance theme colors** - Auto-detected from Nextcloud theming, or set with `ncdeck config color`
-- **Shared-board filtering** - Show only cards assigned to you by default, or all cards with `--all`
+- **Assignment filtering** - By default only cards assigned to you are listed; `--unassigned` and `--others` add the other groups
 - **API version compatible** - Tries multiple endpoints when discovering labels across different Nextcloud Deck versions
 
 ## Requirements
@@ -387,7 +389,8 @@ Usage: ncdeck create [OPTIONS] BOARD_KEY TITLE
 | `-p, --prefix TEXT` | `string` | `""` | Prefix to prepend to the card title. Great for categorization (e.g. `[BUG]`, `[TODO]`, `[IDEA]`). |
 | `-d, --description TEXT` | `string` | `""` | Card description in plain text or Markdown. |
 | `-f, --description-file PATH` | `path` | `None` | Read the card description from a local Markdown/text file. The file contents are used as-is. |
-| `--due-date TEXT` | `string` | `None` | Due date for the card in ISO 8601 format. Examples: `2026-10-31`, `2026-11-01T14:30:00`. |
+| `--due-date TEXT` | `string` | `None` | Due date for the card in ISO 8601 format. Examples: `2026-10-31`, `2026-11-01T14:30:00`, `today`, `tomorrow`. |
+| `--start-date TEXT` | `string` | `None` | Start date (same formats). Applied with a follow-up PUT because Deck's create endpoint does not persist it. Requires Deck 1.18+. |
 | `-t, --tag TEXT` | `string` (multiple) | `[]` | Tag/label name to apply to the card. Can be used multiple times. Names are matched case-insensitively against labels on the target board. |
 | `-a, --assign TEXT` | `string` (multiple) | `[]` | Assign card to user(s) by Nextcloud user ID. Can be used multiple times. |
 | `-i, --instance TEXT` | `string` | `default_instance` | Instance to use for this card. |
@@ -657,11 +660,11 @@ ncdeck show inbox 123 --raw
 
 **Markdown rendering:** When stdout is a terminal, the card description and comment messages are rendered with a lightweight built-in Markdown renderer — headings, bold/italic, inline code, fenced code blocks, bullet/numbered/task lists (`☐` / `☑`), quotes, links, and horizontal rules — using the instance color. No extra dependencies are required. When output is piped (not a TTY) the raw Markdown is kept, so scripts see the original source; `--raw` forces this behavior even on a terminal.
 
-**Output includes:** Card ID and title, board/instance, stack, status (active/done/overdue/archived), done timestamp (or an indication that the card is in the done stack without a timestamp), due date, labels, assignees, created/modified timestamps, dependent cards, full description, and the card's comments (author, timestamp, and message).
+**Output includes:** Card ID and title, board/instance, stack, status (active/done/overdue/archived), done timestamp (or an indication that the card is in the done stack without a timestamp), start date, due date, labels, assignees, created/modified timestamps, dependent cards, full description, and the card's comments (author, timestamp, and message).
 
 ### `ncdeck agenda`
 
-Show cards by due date. The first argument is either a relative period or an absolute date; a second date creates an inclusive range.
+Show cards by start/due date. The first argument is either a relative period or an absolute date; a second date creates an inclusive range. Both `STARTS` and `OVERDUE` rows can appear; a card with a start and a due date shows a `Start … → Due …` span.
 
 ```text
 Usage: ncdeck agenda [OPTIONS] [PERIOD] [END_DATE]
@@ -676,18 +679,90 @@ Usage: ncdeck agenda [OPTIONS] [PERIOD] [END_DATE]
 | --- | --- |
 | `-i, --instance TEXT` | Use a specific instance. |
 | `-A, --all-instances` | Combine all configured instances. |
-| `--all` | Include unassigned cards on shared boards. |
+| `--all` | Shortcut for both `--unassigned` and `--others`. |
+| `--unassigned` | Also include cards with no assignee. |
+| `--others` | Also include cards assigned to another user. |
+| `--anchor YYYY-MM-DD` | Start a relative `week`/`month` (or `today`) at this date. |
 
 ```bash
 ncdeck agenda today
 ncdeck agenda 2026-11-15                 # one specific day
 ncdeck agenda 2026-11-10 2026-11-20     # inclusive range
+ncdeck agenda week --anchor 2026-11-25  # week starting at that date
 ncdeck agenda 2026-11-15 -A             # same day across every instance
+ncdeck agenda week --unassigned --others
 ```
 
-`agenda` excludes done cards and highlights overdue ones in red. Dates are interpreted in your local timezone.
+`agenda` excludes archived, done and done-stack cards, plus any hidden lists.
+By default only cards assigned to the current account's user are listed. Dates
+are interpreted in your local timezone.
 
 > **`today` includes leftovers:** the `today` period (also the default when no argument is given) additionally lists open cards whose due date is before today, marked `OVERDUE`, with a `+ N overdue card(s) from earlier days` line. It looks back up to ~10 years. Other periods, explicit dates, and date ranges stay strictly within the requested window.
+
+### `ncdeck nodue`
+
+List open cards that have no due date, using the same instance, hidden-list and assignment filters as `agenda`.
+
+```text
+Usage: ncdeck nodue [OPTIONS]
+```
+
+| Option | Description |
+| --- | --- |
+| `-i, --instance TEXT` | Use a specific instance. |
+| `-A, --all-instances` | Search all configured instances (default: `default_instance`). |
+| `--all` | Shortcut for both `--unassigned` and `--others`. |
+| `--unassigned` / `--others` | Add the other assignment groups. |
+
+```bash
+ncdeck nodue -A
+ncdeck nodue -i work --unassigned
+```
+
+### `ncdeck lists` and `ncdeck hidden`
+
+`lists` shows every configured board's lists (Deck stacks) with their hidden
+state. `hidden` toggles one; hidden cards never reach `agenda` or `nodue`, but
+the list still appears in `edit --stack` so cards can be moved into it.
+
+```bash
+ncdeck lists                      # all instances
+ncdeck lists -A
+ncdeck hidden inbox 7 on          # hide stack 7 on board 'inbox'
+ncdeck hidden inbox 7 off         # unhide it
+```
+
+The setting lives in `~/.config/ncdeck/hidden-lists.json` (owner-only `0600`)
+and is shared with the Omarchy shell Deck plugin.
+
+### `ncdeck edit`
+
+Edit a card in one GET-modify-PUT operation plus label/assignee/dependency diffs.
+
+```text
+Usage: ncdeck edit [OPTIONS] BOARD_KEY CARD_ID
+```
+
+| Option | Description |
+| --- | --- |
+| `--title TEXT` | New title. |
+| `-d, --description TEXT` | New description. |
+| `--due-date TEXT` / `--start-date TEXT` | New dates; the word `none` clears them. |
+| `--clear-due` / `--clear-start` | Clear a date. |
+| `-t, --tag NAME` | Replace labels with these names (repeatable). |
+| `-a, --assign USER` | Replace assignees with these users (repeatable). |
+| `--dependency ID` | Replace dependent cards with this id; `0` clears them. |
+| `--done` / `--not-done` | Set/clear the done timestamp and move to/out of the done stack. |
+| `--stack ID` | Move the card to this stack. |
+| `-i, --instance TEXT` | Instance to use. |
+
+```bash
+ncdeck edit inbox 123 --title "Fixed" -t bug -a bob
+ncdeck edit inbox 123 --start-date 2026-11-25 --clear-due
+ncdeck edit inbox 123 --done            # sets done + moves to done stack
+ncdeck edit inbox 123 --not-done        # clears done + moves back
+ncdeck edit inbox 123 --stack 7 --dependency 456
+```
 
 ## Usage Examples
 
@@ -750,12 +825,20 @@ ncdeck agenda month
 ncdeck agenda 2026-11-15
 ncdeck agenda 2026-11-10 2026-11-20
 
+# Start a relative period at a chosen date
+ncdeck agenda week --anchor 2026-11-25
+
 # All configured instances, or one specific instance
 ncdeck agenda today -A
 ncdeck agenda week -i work
 
-# Include unassigned cards on shared boards
-ncdeck agenda week --all
+# Add unassigned cards and cards assigned to other users (default: only yours)
+ncdeck agenda week --unassigned --others
+
+# Undated cards, and hiding whole lists from both agenda views
+ncdeck nodue -A
+ncdeck lists -i work
+ncdeck hidden inbox 7 on -i work
 
 # Interactive review: mark cards done, push the rest to the next day
 ncdeck completed
@@ -765,7 +848,7 @@ ncdeck completed -A --archive
 ncdeck archive inbox 2026-01-01 -y
 ```
 
-`agenda` excludes done cards and highlights overdue ones in red; `agenda today` also pulls in open cards overdue from earlier days. `agenda yesterday` or `agenda YYYY-MM-DD` looks at one exact day. Dates are local, and a `START END` pair gives an inclusive range. `completed` combines today's and overdue cards into one prompt.
+`agenda` excludes archived, done and done-stack cards plus hidden lists, and highlights overdue ones in red; `agenda today` also pulls in open cards overdue from earlier days. Start dates appear as `STARTS`, and a card with both dates shows a `Start … → Due …` span. Dates are local, and a `START END` pair gives an inclusive range. `nodue` covers cards without a deadline; `completed` combines today's and overdue cards into one prompt.
 
 ### Adding tags/labels by name
 
@@ -821,6 +904,12 @@ ncdeck show inbox 123
 # Search titles and descriptions
 ncdeck search inbox "login"
 ncdeck search bugs "crash" --include-archived
+
+# Edit several fields at once
+ncdeck edit inbox 123 --title "Fixed" --start-date 2026-11-25 -t bug -a bob
+ncdeck edit inbox 123 --clear-due --dependency 456
+ncdeck edit inbox 123 --done
+ncdeck edit inbox 123 --not-done
 
 # Replace or amend a description
 ncdeck description inbox 123 "New description"
@@ -879,10 +968,12 @@ ncdeck create bugs "Memory leak in worker" \
 
 ## Tips & Notes
 
-- **Use App Passwords**: Generate one at `Settings > Security > Devices & sessions > Create new app password`. Never commit your real password to version control.
+- **Use App Passwords**: Generate one at `Settings > Security > Devices & sessions > Create new app password`. Never commit your real password to version control. The config and hidden-list files are written `0600`.
+- **Server URLs must be HTTPS** (plain HTTP is allowed only for localhost); Login Flow credentials are never sent over cleartext. All requests have connect/read timeouts and bounded response bodies.
 - **Markdown is preserved**: Nextcloud Deck renders Markdown in card descriptions, so lists, code blocks, links, etc. will display correctly.
 - **Labels are board-specific and cached**: The same label name can exist on different boards with different IDs. `ncdeck` resolves `-t/--tag` against the labels cached in config for that board (no API lookup on each create). Run `ncdeck labels BOARD_KEY --refresh` after changing labels in the Deck web UI.
 - **Board aliases are per instance**: `ncdeck config alias INSTANCE BOARD ALIAS` sets one; `ncdeck list --boards` shows each real board name mapped to its key and alias. Exact keys take precedence and aliases are case-insensitive.
+- **Hidden lists and the plugin**: `~/.config/ncdeck/hidden-lists.json` is shared with the Omarchy shell Deck plugin; `ncdeck hidden` and the plugin's Hidden lists view read and write the same file.
 - **Prefix is flexible**: Since prefix is a CLI flag, you can use different conventions per card without changing your config.
 - **Piping is great for automation**: Combine with `git log`, `journalctl`, `curl`, scripts, or clipboard tools to quickly create cards.
 - **Done workflow**: Configure `done_stack_id` for each board to streamline marking cards as complete. You can also use `--archive` if you prefer archiving.

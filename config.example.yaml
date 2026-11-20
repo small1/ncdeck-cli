@@ -1,5 +1,8 @@
 # ~/.config/ncdeck/config.yaml
 # Example configuration for ncdeck
+#
+# Lists hidden from the agenda are stored separately (and shared with the
+# Omarchy shell Deck plugin) in ~/.config/ncdeck/hidden-lists.json.
 
 # Instance to use if none is specified with -i/--instance
 default_instance: work

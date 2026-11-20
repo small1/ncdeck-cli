@@ -26,11 +26,12 @@ A few glimpses of `ncdeck` in action (captured in [Ghostty](https://ghostty.org/
 
 ## What it can do
 
-- **Create rich cards** — titles with prefixes, due dates (`today`, `tomorrow`, `2026-11-11`, or full timestamps), tags by name, descriptions from inline text / files / stdin, assignees, and file attachments.
-- **Work with existing cards** — mark done (and move to a done stack), move between stacks, assign/unassign users, add comments, set or amend descriptions, and attach files.
-- **See everything at a glance** — `list --cards`, `search`, and `show` display assignees, due dates, colored label chips, task-list counters (`[done/total]`), comment counters (`[💬 n]`), dependencies (`[🔗 #id]`), and prominent `OVERDUE` / `DONE` status. In a terminal, `show` also renders descriptions and comments as Markdown (use `--raw` for the source).
-- **Plan your day** — `agenda yesterday|today|tomorrow|week|month`, an exact `YYYY-MM-DD` date, or a `START END` range (with `-A` for all instances); `today` also surfaces overdue cards from earlier days. Plus the interactive `completed` review.
-- **Multiple instances** — one config, short board/instance names, per-instance theme colors, cached labels (with colors), and shared-board filtering.
+- **Create rich cards** — titles with prefixes, start and due dates (`today`, `tomorrow`, `2026-11-11`, or full timestamps), tags by name, descriptions from inline text / files / stdin, assignees, dependent cards, and file attachments.
+- **Work with existing cards** — `edit` changes title, dates, labels, assignees, dependencies, done state and stack in one operation; plus `done`, `move`, `assign`, `comment`, `description`, and `attach`.
+- **See everything at a glance** — `list --cards`, `search`, and `show` display assignees, start/due dates, colored label chips, task-list counters (`[done/total]`), comment counters (`[💬 n]`), dependencies (`[🔗 #id]`), and prominent `OVERDUE` / `DONE` status. In a terminal, `show` also renders descriptions and comments as Markdown (use `--raw` for the source).
+- **Plan your day** — `agenda yesterday|today|tomorrow|week|month`, an exact `YYYY-MM-DD` date, or a `START END` range (with `-A`, `--anchor`, and assignment filters); `today` also surfaces overdue cards from earlier days and start dates appear as `STARTS`. `nodue` lists cards without a deadline; `completed` is the interactive review.
+- **Hidden lists** — `lists` and `hidden BOARD STACK on|off` exclude whole lists from the agenda while keeping their cards editable.
+- **Multiple instances** — one config, short board/instance names, per-instance theme colors, cached labels (with colors), and assignment-based filtering.
 - **Board aliases** — give a board a short alias (e.g. `DW` for `Digital Workplace`) and use it anywhere a board key is accepted; `ncdeck list --boards` shows each real board name next to its mapped name and alias.
 - **Bulk cleanup** — `archive BOARD BEFORE_DATE` to archive old done cards.
 
@@ -142,8 +143,8 @@ ncdeck create BT "Another bug" -p "[BUG]"
 ### Cards
 
 ```bash
-# Prefix, due date, tags, description, and assignee
-ncdeck create inbox "Fix login bug" -p "[BUG]" --due-date 2026-11-11 -t bug -t critical -d "Fails on Safari" -a alice
+# Prefix, start/due dates, tags, description, and assignee
+ncdeck create inbox "Fix login bug" -p "[BUG]" --start-date 2026-11-10 --due-date 2026-11-11 -t bug -t critical -d "Fails on Safari" -a alice
 
 # Description from a Markdown file, plus an attachment
 ncdeck create bugs "Crash on upload" -f ./crash-report.md --attach ./debug.log
@@ -153,7 +154,13 @@ ncdeck list --cards inbox
 ncdeck show inbox 123
 ncdeck search inbox "login"
 
-# Update
+# Edit everything about a card in one command
+ncdeck edit inbox 123 --title "Fix login bug (Safari)" --start-date 2026-11-12 -t bug -a bob
+ncdeck edit inbox 123 --clear-due --dependency 456
+ncdeck edit inbox 123 --done          # sets done + moves to the done stack
+ncdeck edit inbox 123 --not-done      # clears done + moves back
+
+# Update individual fields
 ncdeck description inbox 123 --amend "Follow-up: fixed in 18.1"
 ncdeck comment inbox 123 "Waiting on QA"
 ncdeck assign inbox 123 bob
@@ -180,12 +187,20 @@ ncdeck agenda month
 ncdeck agenda 2026-11-15
 ncdeck agenda 2026-11-10 2026-11-20
 
-# Across every configured instance / include unassigned cards on shared boards
-ncdeck agenda today -A
-ncdeck agenda week --all
+# A relative week/month starting at a chosen day
+ncdeck agenda week --anchor 2026-11-25
 
-# Focus on one instance
+# Across every configured instance, or one instance
+ncdeck agenda today -A
 ncdeck agenda today -i work
+
+# Add unassigned cards and cards assigned to other users (default: only yours)
+ncdeck agenda week --unassigned --others
+
+# Cards with no due date, and hiding whole lists from both views
+ncdeck nodue -A
+ncdeck lists -i work
+ncdeck hidden inbox 7 on -i work
 
 # Interactive daily review: mark selected cards done, push the rest to tomorrow
 ncdeck completed
